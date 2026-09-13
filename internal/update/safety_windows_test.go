@@ -74,7 +74,7 @@ func TestValidateWindowsUpdateSecurityDescriptorPolicies(t *testing.T) {
 		},
 		{
 			name:       "system ancestor cannot delete existing child",
-			sddl:       "O:SYG:SYD:(A;;DC;;;BU)(A;;FA;;;SY)(A;;FA;;;BA)",
+			sddl:       "O:SYG:SYD:(A;;0x00000040;;;BU)(A;;FA;;;SY)(A;;FA;;;BA)",
 			directory:  true,
 			elevated:   true,
 			ancestor:   true,

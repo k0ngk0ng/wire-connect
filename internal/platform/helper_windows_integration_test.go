@@ -10,13 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -260,6 +259,9 @@ func stageWindowsHelperTestUtility(t *testing.T, source, userSID string) string 
 		t.Fatalf("protect staged helper test utility from standard-user writes: %v", err)
 	}
 	t.Cleanup(func() {
+		// chmod controls the DOS read-only attribute on Windows; restore it
+		// before RemoveAll so the protected staging file can be deleted.
+		_ = os.Chmod(destination, 0600)
 		// Restore a writable DACL before removal in case cleanup runs under a
 		// token that is not a member of the Administrators group.
 		_ = setWindowsHelperTestACL(dir, destination, "")
@@ -433,19 +435,174 @@ func netUserDel(name *uint16) (uint32, error) {
 }
 
 func runWindowsLimitedProcess(ctx context.Context, token windows.Token, path string, args []string) (stdout, stderr string, err error) {
-	cmd := exec.CommandContext(ctx, path, args...)
-	// os/exec uses CreateProcessAsUser when SysProcAttr.Token is set. Using the
-	// linked token here is essential: merely launching from an elevated parent
-	// would cause nethelper.currentSID/trusted peer checks to observe the admin
-	// token and would not test the named-pipe ACL boundary.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Token:      syscall.Token(token),
-		HideWindow: true,
+	if err := ctx.Err(); err != nil {
+		return "", "", err
 	}
-	cmd.Dir = filepath.Dir(path)
-	var out, errOut bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-	err = cmd.Run()
-	return out.String(), errOut.String(), err
+	stdoutReader, stdoutWriter, err := windowsOutputPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("create limited child stdout pipe: %w", err)
+	}
+	defer stdoutReader.Close()
+	defer stdoutWriter.Close()
+	stderrReader, stderrWriter, err := windowsOutputPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("create limited child stderr pipe: %w", err)
+	}
+	defer stderrReader.Close()
+	defer stderrWriter.Close()
+
+	var processInfo windows.ProcessInformation
+	if err := createProcessWithToken(token, path, args,
+		windows.Handle(stdoutWriter.Fd()), windows.Handle(stderrWriter.Fd()), &processInfo); err != nil {
+		return "", "", fmt.Errorf("create non-elevated helper client: %w", err)
+	}
+	// The child owns the inherited write ends from this point onward. Closing
+	// the parent copies is required for the reader goroutines to observe EOF.
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
+	defer windows.CloseHandle(processInfo.Process)
+	defer windows.CloseHandle(processInfo.Thread)
+
+	type pipeResult struct {
+		stream int
+		data   []byte
+		err    error
+	}
+	results := make(chan pipeResult, 2)
+	go func() {
+		data, readErr := io.ReadAll(stdoutReader)
+		results <- pipeResult{stream: 0, data: data, err: readErr}
+	}()
+	go func() {
+		data, readErr := io.ReadAll(stderrReader)
+		results <- pipeResult{stream: 1, data: data, err: readErr}
+	}()
+
+	processErr := waitLimitedWindowsProcess(ctx, processInfo.Process)
+	var output [2][]byte
+	var outputErr error
+	for received := 0; received < len(output); received++ {
+		select {
+		case result := <-results:
+			output[result.stream] = result.data
+			if result.err != nil && outputErr == nil {
+				outputErr = result.err
+			}
+		case <-time.After(5 * time.Second):
+			// A child that keeps an inherited pipe open after termination must
+			// not hold the test forever. Closing both read handles unblocks the
+			// goroutines and the deferred process-handle cleanup remains bounded.
+			_ = stdoutReader.Close()
+			_ = stderrReader.Close()
+			return string(output[0]), string(output[1]), errors.New("timed out collecting limited helper output")
+		}
+	}
+	if outputErr != nil && processErr == nil {
+		return string(output[0]), string(output[1]), fmt.Errorf("read limited helper output: %w", outputErr)
+	}
+	if processErr != nil {
+		return string(output[0]), string(output[1]), processErr
+	}
+	return string(output[0]), string(output[1]), nil
+}
+
+func windowsOutputPipe() (reader, writer *os.File, err error) {
+	handles := make([]windows.Handle, 2)
+	if err := windows.Pipe(handles); err != nil {
+		return nil, nil, err
+	}
+	if err := windows.SetHandleInformation(handles[0], windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+		_ = windows.CloseHandle(handles[0])
+		_ = windows.CloseHandle(handles[1])
+		return nil, nil, err
+	}
+	return os.NewFile(uintptr(handles[0]), "limited-child-output"), os.NewFile(uintptr(handles[1]), "limited-child-input"), nil
+}
+
+func createProcessWithToken(token windows.Token, path string, args []string, stdout, stderr windows.Handle, processInfo *windows.ProcessInformation) error {
+	appName, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	argv := make([]string, 0, len(args)+1)
+	argv = append(argv, path)
+	argv = append(argv, args...)
+	commandLine, err := windows.UTF16FromString(strings.Join(escapeWindowsArgs(argv), " "))
+	if err != nil {
+		return err
+	}
+	currentDir, err := windows.UTF16PtrFromString(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	startup := windows.StartupInfo{
+		Cb:         uint32(unsafe.Sizeof(windows.StartupInfo{})),
+		Flags:      windows.STARTF_USESTDHANDLES | windows.STARTF_USESHOWWINDOW,
+		ShowWindow: windows.SW_HIDE,
+		StdOutput:  stdout,
+		StdErr:     stderr,
+	}
+	proc := advapi32.NewProc("CreateProcessWithTokenW")
+	r, _, callErr := proc.Call(
+		uintptr(token),
+		0,
+		uintptr(unsafe.Pointer(appName)),
+		uintptr(unsafe.Pointer(&commandLine[0])),
+		uintptr(windows.CREATE_UNICODE_ENVIRONMENT),
+		0,
+		uintptr(unsafe.Pointer(currentDir)),
+		uintptr(unsafe.Pointer(&startup)),
+		uintptr(unsafe.Pointer(processInfo)),
+	)
+	if r == 0 {
+		if callErr == nil {
+			callErr = windows.GetLastError()
+		}
+		return fmt.Errorf("CreateProcessWithTokenW: %w", callErr)
+	}
+	return nil
+}
+
+func escapeWindowsArgs(args []string) []string {
+	escaped := make([]string, len(args))
+	for i, arg := range args {
+		escaped[i] = windows.EscapeArg(arg)
+	}
+	return escaped
+}
+
+func waitLimitedWindowsProcess(ctx context.Context, process windows.Handle) error {
+	for {
+		result, err := windows.WaitForSingleObject(process, 100)
+		if err != nil {
+			return fmt.Errorf("wait for limited helper client: %w", err)
+		}
+		switch result {
+		case windows.WAIT_OBJECT_0:
+			var exitCode uint32
+			if err := windows.GetExitCodeProcess(process, &exitCode); err != nil {
+				return fmt.Errorf("read limited helper client exit status: %w", err)
+			}
+			if exitCode != 0 {
+				return fmt.Errorf("limited helper client exited with code %d", exitCode)
+			}
+			return nil
+		case uint32(windows.WAIT_TIMEOUT):
+			if err := ctx.Err(); err != nil {
+				if terminateErr := windows.TerminateProcess(process, 1); terminateErr != nil {
+					return fmt.Errorf("terminate limited helper client after %w: %v", err, terminateErr)
+				}
+				result, waitErr := windows.WaitForSingleObject(process, 5000)
+				if waitErr != nil {
+					return fmt.Errorf("wait for terminated limited helper client after %w: %v", err, waitErr)
+				}
+				if result != windows.WAIT_OBJECT_0 {
+					return fmt.Errorf("limited helper client did not terminate after %w", err)
+				}
+				return err
+			}
+		default:
+			return fmt.Errorf("wait for limited helper client returned status %#x", result)
+		}
+	}
 }

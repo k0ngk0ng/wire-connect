@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -15,10 +16,13 @@ import (
 func TestWindowsStatusUsesReadOnlyServiceAccess(t *testing.T) {
 	identity := testIdentity()
 	oldManager, oldService, oldQuery := openWindowsStatusManagerFn, openWindowsStatusServiceFn, queryWindowsStatusServiceFn
+	oldCloseManager, oldCloseService := closeWindowsStatusManagerFn, closeWindowsStatusServiceFn
 	t.Cleanup(func() {
 		openWindowsStatusManagerFn = oldManager
 		openWindowsStatusServiceFn = oldService
 		queryWindowsStatusServiceFn = oldQuery
+		closeWindowsStatusManagerFn = oldCloseManager
+		closeWindowsStatusServiceFn = oldCloseService
 	})
 
 	var managerAccess, serviceAccess uint32
@@ -39,6 +43,8 @@ func TestWindowsStatusUsesReadOnlyServiceAccess(t *testing.T) {
 	queryWindowsStatusServiceFn = func(service *mgr.Service) (svc.Status, error) {
 		return svc.Status{State: svc.Running}, nil
 	}
+	closeWindowsStatusManagerFn = func(*mgr.Mgr) error { return nil }
+	closeWindowsStatusServiceFn = func(*mgr.Service) error { return nil }
 
 	got, err := statusPlatform(context.Background(), identity)
 	if err != nil {
@@ -61,18 +67,38 @@ func TestWindowsHelperServiceSDDLGrantsIdentityQueryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(sddl, "(A;;LC;;;"+identity+")") {
-		t.Fatalf("service ACL = %q; missing identity query-status ACE", sddl)
-	}
-	if strings.Contains(sddl, "(A;;CCLC") || strings.Contains(sddl, "(A;;CCDCLC") {
-		t.Fatalf("service ACL grants identity broader rights: %q", sddl)
-	}
 	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		t.Fatalf("parse service ACL: %v", err)
 	}
 	if sd.String() == "" {
 		t.Fatal("service ACL did not produce a valid descriptor")
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		t.Fatalf("read service ACL: %v", err)
+	}
+	var identityACE int
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil {
+			t.Fatalf("read service ACL entry %d: %v", i, err)
+		}
+		header := (*windows.ACE_HEADER)(unsafe.Pointer(ace))
+		if header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			continue
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if sid.String() != identity {
+			continue
+		}
+		identityACE++
+		if uint32(ace.Mask) != windows.SERVICE_QUERY_STATUS {
+			t.Fatalf("identity service mask = %#x; want SERVICE_QUERY_STATUS (%#x)", uint32(ace.Mask), uint32(windows.SERVICE_QUERY_STATUS))
+		}
+	}
+	if identityACE != 1 {
+		t.Fatalf("identity query-status ACE count = %d; want 1", identityACE)
 	}
 }
 

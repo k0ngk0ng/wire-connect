@@ -35,11 +35,14 @@ func TestStatusWatchCancellationLeavesConnectionRunning(t *testing.T) {
 	if err := os.MkdirAll(base, 0700); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := os.MkdirTemp(base, "s")
+	temp, err := os.MkdirTemp(base, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer os.RemoveAll(temp)
+	// Let Store create the private directory with the platform's native ACL.
+	// os.MkdirTemp inherits the runner's Windows ACL, which is not private.
+	dir := filepath.Join(temp, "state")
 	if err := (config.Store{Dir: dir}).Init(); err != nil {
 		t.Fatal(err)
 	}

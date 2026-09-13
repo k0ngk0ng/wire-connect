@@ -280,6 +280,12 @@ var (
 	queryWindowsStatusServiceFn = func(service *mgr.Service) (svc.Status, error) {
 		return service.Query()
 	}
+	closeWindowsStatusManagerFn = func(manager *mgr.Mgr) error {
+		return manager.Disconnect()
+	}
+	closeWindowsStatusServiceFn = func(service *mgr.Service) error {
+		return service.Close()
+	}
 )
 
 func connectWindowsStatusManager() (*mgr.Mgr, error) {
@@ -315,7 +321,7 @@ func statusPlatform(ctx context.Context, identity string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: connect to Windows Service Control Manager: %w", err)
 	}
-	defer manager.Disconnect()
+	defer closeWindowsStatusManagerFn(manager)
 	service, err := openWindowsStatusService(manager, windowsNativeHelperServiceName(name))
 	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		return "", fmt.Errorf("%w: %q", ErrNotInstalled, identity)
@@ -323,7 +329,7 @@ func statusPlatform(ctx context.Context, identity string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: open network helper service: %w", err)
 	}
-	defer service.Close()
+	defer closeWindowsStatusServiceFn(service)
 	state, err := queryWindowsStatusService(service)
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: query network helper service: %w", err)
