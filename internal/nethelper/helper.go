@@ -109,7 +109,11 @@ func Open(ctx context.Context, cfg Config) (tun.Device, func() error, error) {
 }
 
 func exchange(ctx context.Context, c net.Conn, r request) (response, error) {
-	_ = c.SetDeadline(time.Now().Add(15 * time.Second))
+	timeout := 15 * time.Second
+	if r.Operation == "open" {
+		timeout = 45 * time.Second
+	}
+	_ = c.SetDeadline(time.Now().Add(timeout))
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 	if err := writeJSON(c, r); err != nil {
@@ -207,12 +211,17 @@ func serveConnWithLock(ctx context.Context, conn net.Conn, open OpenFunc, lock f
 	if err := ValidateConfig(req.Config); err != nil {
 		return reply(err)
 	}
+	// The initial deadline only bounds reading the request. A first Windows
+	// adapter may also install a driver, configure routes and wait for DAD.
+	// Bound that work separately, including time waiting for another helper.
+	_ = conn.SetDeadline(time.Now().Add(45 * time.Second))
+	setupCtx, setupCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer setupCancel()
 	// Serialize route check and setup across per-user helper services.
-	unlock, err := lock(ctx)
+	unlock, err := lock(setupCtx)
 	if err != nil {
 		return reply(err)
 	}
-	setupCtx, setupCancel := context.WithTimeout(ctx, 10*time.Second)
 	dev, cleanup, err := open(setupCtx, req.Config)
 	setupCancel()
 	unlock()

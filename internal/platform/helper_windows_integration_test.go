@@ -93,7 +93,11 @@ func TestRealNetworkHelperLifecycle(t *testing.T) {
 			if err != nil {
 				return nil, nil, err
 			}
-			return Open(openCtx, Config{Name: c.Name, Local: localAddr, Peer: peerAddr, MTU: c.MTU})
+			device, cleanup, err := Open(openCtx, Config{Name: c.Name, Local: localAddr, Peer: peerAddr, MTU: c.MTU})
+			if err != nil {
+				t.Logf("privileged TUN setup failed: %v", err)
+			}
+			return device, cleanup, err
 		})
 	}()
 
