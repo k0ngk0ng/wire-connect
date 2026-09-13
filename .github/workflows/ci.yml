@@ -31,20 +31,21 @@ jobs:
     env:
       GOCACHE: ${{ github.workspace }}/.cache/go-build
       GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOPATH: ${{ github.workspace }}/.cache/go
       GOTMPDIR: ${{ github.workspace }}/.cache/tmp
       TMPDIR: ${{ github.workspace }}/.cache/tmp
       TEMP: ${{ github.workspace }}/.cache/tmp
       TMP: ${{ github.workspace }}/.cache/tmp
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$GOTMPDIR"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-      - name: Prepare repository-local Go paths
-        shell: bash
-        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
-      - run: go test -race ./...
+      - run: go test -race -timeout 2m ./...
       - run: go vet ./...
 
   network-tun:
@@ -67,26 +68,27 @@ jobs:
     env:
       GOCACHE: ${{ github.workspace }}/.cache/go-build
       GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOPATH: ${{ github.workspace }}/.cache/go
       GOTMPDIR: ${{ github.workspace }}/.cache/tmp
       TMPDIR: ${{ github.workspace }}/.cache/tmp
       TEMP: ${{ github.workspace }}/.cache/tmp
       TMP: ${{ github.workspace }}/.cache/tmp
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$GOTMPDIR" "$GITHUB_WORKSPACE/.cache/network"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-      - name: Prepare repository-local Go paths
-        shell: bash
-        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR" "$GITHUB_WORKSPACE/.cache/network"
       - name: Build integration test binary
         shell: bash
         env:
           TEST_EXTENSION: ${{ matrix.extension }}
         run: |
           set -euo pipefail
-          go test -tags integration -c -o ".cache/network/platform.test${TEST_EXTENSION}" ./internal/platform
+          go test -tags integration -timeout 2m -c -o ".cache/network/platform.test${TEST_EXTENSION}" ./internal/platform
       - name: Fetch adjacent Wintun runtime
         if: matrix.name == 'windows'
         shell: bash
@@ -103,7 +105,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo env WIRE_CONNECT_NETWORK_TEST=1 "$GITHUB_WORKSPACE/.cache/network/platform.test" -test.run '^TestOpenRealTUNLifecycle$' -test.v
+          sudo env WIRE_CONNECT_NETWORK_TEST=1 "$GITHUB_WORKSPACE/.cache/network/platform.test" -test.run '^TestOpenRealTUNLifecycle$' -test.timeout=2m -test.v
       - name: Run real TUN lifecycle (Windows administrator)
         if: matrix.name == 'windows'
         shell: pwsh
@@ -114,7 +116,7 @@ jobs:
             throw 'The Windows TUN lifecycle test requires an elevated administrator runner.'
           }
           $env:WIRE_CONNECT_NETWORK_TEST = '1'
-          & "$env:GITHUB_WORKSPACE/.cache/network/platform.test.exe" -test.run '^TestOpenRealTUNLifecycle$' -test.v
+          & "$env:GITHUB_WORKSPACE/.cache/network/platform.test.exe" -test.run '^TestOpenRealTUNLifecycle$' -test.timeout=2m -test.v
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
@@ -126,17 +128,18 @@ jobs:
     env:
       GOCACHE: ${{ github.workspace }}/.cache/go-build
       GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOPATH: ${{ github.workspace }}/.cache/go
       GOTMPDIR: ${{ github.workspace }}/.cache/tmp
       TMPDIR: ${{ github.workspace }}/.cache/tmp
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$GOTMPDIR"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-      - name: Prepare repository-local Go paths
-        shell: bash
-        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
@@ -147,17 +150,18 @@ jobs:
     env:
       GOCACHE: ${{ github.workspace }}/.cache/go-build
       GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOPATH: ${{ github.workspace }}/.cache/go
       GOTMPDIR: ${{ github.workspace }}/.cache/tmp
       TMPDIR: ${{ github.workspace }}/.cache/tmp
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$GOTMPDIR"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-      - name: Prepare repository-local Go paths
-        shell: bash
-        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
       - name: Build all release targets
         shell: bash
         env:

@@ -178,7 +178,13 @@ func TestLoginAuthAndStateRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
+	if !privateFileInfo(info) {
+		t.Fatalf("state file is not private and regular: mode=%s", info.Mode())
+	}
+	// Unix exposes the access policy through mode bits. Windows reports a
+	// synthetic mode (commonly 0666); its ACL is the authority, so do not
+	// interpret Mode().Perm() as a Unix permission check there.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("state mode = %o", info.Mode().Perm())
 	}
 
