@@ -97,6 +97,14 @@ context. Its `map` and WebSocket upgrade headers are required. The HTTP backend
 port must remain bound to loopback; only public TCP 443 and UDP 3478 are needed
 for client connections. TCP 80 remains available for Certbot HTTP-01 renewals.
 
+On a host running a transparent proxy or VPN, a wildcard UDP socket can send
+STUN replies through that proxy's default route with the wrong source address.
+In that case add `--stun-listen <interface-IP>:3478` to the service command,
+using the physical interface address that receives the public traffic. On a
+cloud host with public-IP NAT this is usually the host's private interface IP,
+not the public address. Verify replies from an external network; an open cloud
+security-group port alone does not verify the return path.
+
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now wirectl-connect.service
