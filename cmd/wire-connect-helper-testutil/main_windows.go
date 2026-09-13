@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/k0ngk0ng/wire-connect/internal/nethelper"
@@ -41,14 +42,31 @@ type result struct {
 	Received  bool   `json:"received"`
 }
 
+var currentPhase atomic.Value
+
 func main() {
+	phase("started")
 	if err := run(os.Args[1:]); err != nil {
+		phase("failed")
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	watchdog := time.NewTimer(testTimeout + 5*time.Second)
+	defer watchdog.Stop()
+	go func() {
+		select {
+		case <-watchdog.C:
+			name, _ := currentPhase.Load().(string)
+			panic(fmt.Sprintf("wire-connect-helper-testutil watchdog timeout in phase %s", name))
+		case <-watchdogDone:
+		}
+	}()
+	phase("checking-token")
 	token := windows.GetCurrentProcessToken()
 	if token.IsElevated() {
 		return errors.New("network helper integration child must run with a non-elevated token")
@@ -68,6 +86,7 @@ func run(args []string) error {
 	if err := f.Parse(args); err != nil {
 		return err
 	}
+	phase("arguments-parsed")
 	if f.NArg() != 0 || *name == "" || *localText == "" || *peerText == "" {
 		return errors.New("usage: wire-connect-helper-testutil --name NAME --local IP --peer IP [--mtu MTU] [--peer-port PORT]")
 	}
@@ -85,9 +104,11 @@ func run(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
+	phase("waiting-helper")
 	if err := waitForHelper(ctx); err != nil {
 		return err
 	}
+	phase("helper-ready")
 
 	cfg := nethelper.Config{
 		Name:  *name,
@@ -99,6 +120,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open helper TUN: %w", err)
 	}
+	phase("tun-opened")
 	if device == nil || cleanup == nil {
 		return errors.New("open helper TUN returned an invalid device")
 	}
@@ -120,6 +142,7 @@ func run(args []string) error {
 	if err := waitForTunnelUp(device); err != nil {
 		return err
 	}
+	phase("tun-ready")
 
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IP(local.AsSlice()), Port: 0})
 	if err != nil {
@@ -140,6 +163,7 @@ func run(args []string) error {
 	} else if n != len(nonce) {
 		return fmt.Errorf("send UDP nonce wrote %d bytes, want %d", n, len(nonce))
 	}
+	phase("udp-sent")
 
 	packet, err := readDevicePacket(ctx, device)
 	if err != nil {
@@ -148,6 +172,7 @@ func run(args []string) error {
 	if err := validateUDP4Packet(packet, local, peer, uint16(localPort), uint16(*peerPort), nonce); err != nil {
 		return fmt.Errorf("validate UDP packet from the OS: %w", err)
 	}
+	phase("udp-packet-read")
 
 	response := makeIPv4UDP(peer, local, uint16(*peerPort), uint16(localPort), nonce)
 	frame := make([]byte, 64+len(response))
@@ -155,6 +180,7 @@ func run(args []string) error {
 	if n, err := device.Write([][]byte{frame}, 64); err != nil || n != 1 {
 		return fmt.Errorf("inject reverse UDP packet through helper proxy: packets=%d error=%v", n, err)
 	}
+	phase("udp-response-injected")
 	got := make([]byte, 64<<10)
 	n, from, err := udp.ReadFromUDP(got)
 	if err != nil {
@@ -166,6 +192,7 @@ func run(args []string) error {
 	if n != len(nonce) || string(got[:n]) != string(nonce) {
 		return fmt.Errorf("reverse UDP payload mismatch: got %d bytes", n)
 	}
+	phase("udp-received")
 	if err := closeDevice(); err != nil {
 		return fmt.Errorf("close helper TUN: %w", err)
 	}
@@ -179,6 +206,11 @@ func run(args []string) error {
 		Sent:      true,
 		Received:  true,
 	})
+}
+
+func phase(name string) {
+	currentPhase.Store(name)
+	_, _ = fmt.Fprintf(os.Stderr, "wire-connect-helper-testutil: %s\n", name)
 }
 
 func waitForHelper(ctx context.Context) error {

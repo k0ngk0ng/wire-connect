@@ -53,6 +53,8 @@ func TestRealNetworkHelperLifecycle(t *testing.T) {
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		t.Fatal("WIRE_CONNECT_NETWORK_TEST=1 requires an elevated Administrator test process")
 	}
+	previousErrorMode := windows.SetErrorMode(windows.SEM_FAILCRITICALERRORS | windows.SEM_NOGPFAULTERRORBOX | windows.SEM_NOOPENFILEERRORBOX)
+	defer windows.SetErrorMode(previousErrorMode)
 	utility := windowsHelperTestUtility(t)
 	linked, identity, cleanupIdentity := windowsLimitedToken(t)
 	defer func() {
@@ -548,7 +550,7 @@ func createProcessWithToken(token windows.Token, path string, args []string, std
 		0,
 		uintptr(unsafe.Pointer(appName)),
 		uintptr(unsafe.Pointer(&commandLine[0])),
-		uintptr(windows.CREATE_UNICODE_ENVIRONMENT),
+		uintptr(windows.CREATE_UNICODE_ENVIRONMENT|windows.CREATE_NO_WINDOW),
 		0,
 		uintptr(unsafe.Pointer(currentDir)),
 		uintptr(unsafe.Pointer(&startup)),
