@@ -37,23 +37,6 @@ func (l *unixProfileLock) Close() error {
 	return l.closeErr
 }
 
-func ensureDirectory(dir string) error {
-	if err := rejectSymlinkComponents(dir); err != nil {
-		return err
-	}
-	st, err := os.Lstat(dir)
-	if err != nil {
-		return fmt.Errorf("local control directory: %w", err)
-	}
-	if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
-		return errors.New("local control directory must be a real directory")
-	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		return fmt.Errorf("protect local control directory: %w", err)
-	}
-	return nil
-}
-
 func checkEndpointLength(dir, name string) error {
 	path := endpointPath(dir, name)
 	if len(path) >= unixSocketPathLimit {

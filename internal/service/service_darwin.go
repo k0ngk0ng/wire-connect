@@ -16,9 +16,11 @@ import (
 const launchdDir = "/Library/LaunchDaemons"
 
 var (
-	platformCommands  commandRunner = execCommandRunner{}
-	darwinLaunchctl                 = findLaunchctl
-	darwinRequireRoot               = requireUnixRoot
+	platformCommands    commandRunner = execCommandRunner{}
+	darwinLaunchctl                   = findLaunchctl
+	darwinRequireRoot                 = requireUnixRoot
+	darwinPlistExists                 = darwinServiceRecordExists
+	darwinProgramExists               = darwinInstalledDirExists
 )
 
 func darwinNativeName(name string) string {
@@ -76,7 +78,7 @@ func Install(ctx context.Context, cfg Config) error {
 	if err := runCommand(ctx, platformCommands, manager, "bootstrap", "system", darwinPlistPath(normalized.Name)); err != nil {
 		// A previous installation may still be bootstrapped.  Unload only after
 		// bootstrap reports an error, then retry with the new plist.
-		if unloadErr := runCommand(ctx, platformCommands, manager, "bootout", "system", target); unloadErr != nil {
+		if unloadErr := runCommand(ctx, platformCommands, manager, "bootout", target); unloadErr != nil {
 			return fmt.Errorf("wire-connect: bootstrap LaunchDaemon %q: %w (also failed to replace existing job: %v)", normalized.Name, err, unloadErr)
 		}
 		if retryErr := runCommand(ctx, platformCommands, manager, "bootstrap", "system", darwinPlistPath(normalized.Name)); retryErr != nil {
@@ -101,6 +103,13 @@ func Stop(ctx context.Context, name string) error {
 	}
 	if err := contextErr(ctx); err != nil {
 		return err
+	}
+	plistInstalled, err := darwinPlistExists(normalizedName)
+	if err != nil {
+		return err
+	}
+	if !plistInstalled {
+		return fmt.Errorf("%w: %q", ErrNotInstalled, normalizedName)
 	}
 	if err := darwinRequireRoot(); err != nil {
 		return err
@@ -139,6 +148,17 @@ func Uninstall(ctx context.Context, name string) error {
 	if err := contextErr(ctx); err != nil {
 		return err
 	}
+	plistInstalled, err := darwinPlistExists(normalizedName)
+	if err != nil {
+		return err
+	}
+	programInstalled, err := darwinProgramExists(normalizedName)
+	if err != nil {
+		return err
+	}
+	if !plistInstalled && !programInstalled {
+		return nil
+	}
 	if err := darwinRequireRoot(); err != nil {
 		return err
 	}
@@ -158,7 +178,7 @@ func Uninstall(ctx context.Context, name string) error {
 		if err := runCommand(ctx, platformCommands, manager, "kill", "SIGTERM", target); err != nil && !isLaunchctlNotLoaded(err) {
 			return fmt.Errorf("wire-connect: stop LaunchDaemon before uninstall: %w", err)
 		}
-		if err := runCommand(ctx, platformCommands, manager, "bootout", "system", target); err != nil && !isLaunchctlNotLoaded(err) {
+		if err := runCommand(ctx, platformCommands, manager, "bootout", target); err != nil && !isLaunchctlNotLoaded(err) {
 			return fmt.Errorf("wire-connect: unload LaunchDaemon %q: %w", normalizedName, err)
 		}
 	}
@@ -213,6 +233,36 @@ func findLaunchctl() (string, error) {
 		}
 	}
 	return "", errors.New("wire-connect: launchctl was not found at /bin/launchctl or /usr/bin/launchctl")
+}
+
+func darwinServiceRecordExists(name string) (bool, error) {
+	path := darwinPlistPath(name)
+	st, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("wire-connect: inspect LaunchDaemon record: %w", err)
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
+		return false, fmt.Errorf("wire-connect: LaunchDaemon record %q is not a regular file", path)
+	}
+	return true, nil
+}
+
+func darwinInstalledDirExists(name string) (bool, error) {
+	path := darwinInstalledDir(name)
+	st, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("wire-connect: inspect installed service directory: %w", err)
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		return false, fmt.Errorf("wire-connect: installed service directory %q is not a real directory", path)
+	}
+	return true, nil
 }
 
 func launchdState(out []byte) string {

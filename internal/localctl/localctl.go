@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/k0ngk0ng/wire-connect/internal/config"
 )
 
 const (
@@ -354,8 +356,23 @@ func validateDirectory(dir string) (string, error) {
 		return "", errors.New("empty local control directory")
 	}
 	clean := filepath.Clean(dir)
-	if err := ensureDirectory(clean); err != nil {
+	if err := rejectSymlinkComponents(clean); err != nil {
 		return "", err
+	}
+	// The state directory is initialized by config.Store. Lstat before
+	// calling Init is intentional: local control must never create a missing
+	// directory, and Init's platform policy must inspect an existing one
+	// without rewriting its mode or ACL.
+	st, err := os.Lstat(clean)
+	if err != nil {
+		return "", fmt.Errorf("local control directory: %w", err)
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		return "", errors.New("local control directory must be a real directory")
+	}
+	store := config.Store{Dir: clean}
+	if err := store.Init(); err != nil {
+		return "", fmt.Errorf("local control directory: %w", err)
 	}
 	return clean, nil
 }

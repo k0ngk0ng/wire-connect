@@ -60,6 +60,23 @@ func TestUnixEndpointPermissionsAndCloseCleanup(t *testing.T) {
 	}
 }
 
+func TestUnixExistingDirectoryPermissionsAreRejectedWithoutRewrite(t *testing.T) {
+	dir := testDirectory(t)
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(context.Background(), dir, "unsafe-dir", func() any { return nil }, nil); err == nil {
+		t.Fatal("Listen accepted a group/world-accessible directory")
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Fatalf("directory mode after rejection = %o, want unchanged 755", got)
+	}
+}
+
 func TestUnixStaleSocketRemovedOnlyAfterLock(t *testing.T) {
 	dir := testDirectory(t)
 	path := endpointPath(dir, "stale")

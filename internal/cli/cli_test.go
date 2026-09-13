@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"io"
+	"runtime"
 	"testing"
 )
 
@@ -38,5 +39,27 @@ func TestInvalidFlagsFail(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if err := Run(context.Background(), []string{"vpn.example.com", "--does-not-exist"}, "test", bytes.NewReader(nil), &out, &errOut); err == nil {
 		t.Fatal("accepted unknown flag")
+	}
+}
+
+func TestNamedConnectionsUseIndependentInterfaces(t *testing.T) {
+	if got := defaultInterface("custom0", "office"); got != "custom0" {
+		t.Fatalf("explicit interface changed to %q", got)
+	}
+	if got := defaultInterface("", "default"); got != "" {
+		t.Fatalf("default interface changed to %q", got)
+	}
+	a, b := defaultInterface("", "office"), defaultInterface("", "home")
+	if runtime.GOOS == "darwin" {
+		if a != "" || b != "" {
+			t.Fatal("macOS must retain dynamic utun allocation")
+		}
+		return
+	}
+	if a == "" || b == "" || a == b || len(a) > 15 || len(b) > 15 {
+		t.Fatalf("invalid independent interfaces: %q, %q", a, b)
+	}
+	if a != defaultInterface("", "office") {
+		t.Fatal("resuming a named connection must select the same interface")
 	}
 }

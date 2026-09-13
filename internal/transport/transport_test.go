@@ -212,7 +212,7 @@ func TestICERealConsentLossUnblocksRead(t *testing.T) {
 	timing := iceTiming{
 		keepalive:    50 * time.Millisecond,
 		disconnected: 500 * time.Millisecond,
-		failed:       time.Second,
+		failed:       0,
 		stunGather:   3 * time.Second,
 	}
 	host, guest, hostConn, guestConn := connectedICEPairWithTiming(t, root, timing)
@@ -293,12 +293,14 @@ func TestBindDirectReceiveCloseReopenAndFallback(t *testing.T) {
 	if _, err := right.Write(payload); err != nil {
 		t.Fatal(err)
 	}
-	buf := make([]byte, 128)
 	sizes := make([]int, 1)
 	// Use the concrete WireGuard callback signature through the helper below;
 	// keeping the receive assertion in one place makes Close's wake-up test
 	// easier to read.
-	got := readBindPacket(t, fns[0], buf)
+	got, err := readBindPacketWithin(fns[0], time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(got) != string(payload) {
 		t.Fatalf("direct receive = %q, want %q", got, payload)
 	}
@@ -398,7 +400,10 @@ func TestBindRelayWebSocketAndSourceFiltering(t *testing.T) {
 	if err := a.Send([][]byte{payload}, ep); err != nil {
 		t.Fatal(err)
 	}
-	got := readBindPacket(t, fns[0], make([]byte, 128))
+	got, err := readBindPacketWithin(fns[0], time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(got) != string(payload) {
 		t.Fatalf("relay receive = %q, want %q", got, payload)
 	}
@@ -653,7 +658,7 @@ func TestBindICEConsentLossFallsBackToRelay(t *testing.T) {
 	timing := iceTiming{
 		keepalive:    50 * time.Millisecond,
 		disconnected: 500 * time.Millisecond,
-		failed:       time.Second,
+		failed:       0,
 		stunGather:   3 * time.Second,
 	}
 	hostICE, guestICE, hostConn, guestConn := connectedICEPairWithTiming(t, ctx, timing)
@@ -690,20 +695,6 @@ func TestBindICEConsentLossFallsBackToRelay(t *testing.T) {
 	if stats := a.Stats(); stats.Mode != "relay" {
 		t.Fatalf("A stats after ICE consent loss = %+v, want relay", stats)
 	}
-}
-
-func readBindPacket(t *testing.T, fn wgconn.ReceiveFunc, buf []byte) []byte {
-	t.Helper()
-	sizes := make([]int, 1)
-	endpoints := make([]wgconn.Endpoint, 1)
-	n, err := fn([][]byte{buf}, sizes, endpoints)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("receive count = %d, want 1", n)
-	}
-	return append([]byte(nil), buf[:sizes[0]]...)
 }
 
 func connectedICEPair(t *testing.T, ctx context.Context) (*ICE, *ICE, net.Conn, net.Conn) {

@@ -124,8 +124,8 @@ func TestLinuxInstallUsesProtectedCopyAndDirectSystemctlArguments(t *testing.T) 
 }
 
 func TestSystemdQuoteEscapesUnitSyntax(t *testing.T) {
-	got := systemdQuote("a b\"c\\d\n")
-	want := `"a b\"c\\d\n"`
+	got := systemdQuote("a b\"c\\d\n$HOME/%i")
+	want := `"a b\"c\\d\n$$HOME/%%i"`
 	if got != want {
 		t.Fatalf("systemdQuote = %q; want %q", got, want)
 	}
@@ -135,9 +135,9 @@ func TestSystemdQuoteEscapesUnitSyntax(t *testing.T) {
 }
 
 func TestLinuxStopAndUninstallPreserveState(t *testing.T) {
-	oldFiles, oldCommands, oldRoot, oldSystemctl := platformFiles, platformCommands, linuxRequireRoot, linuxSystemctl
+	oldFiles, oldCommands, oldRoot, oldSystemctl, oldUnitExists := platformFiles, platformCommands, linuxRequireRoot, linuxSystemctl, linuxUnitExists
 	defer func() {
-		platformFiles, platformCommands, linuxRequireRoot, linuxSystemctl = oldFiles, oldCommands, oldRoot, oldSystemctl
+		platformFiles, platformCommands, linuxRequireRoot, linuxSystemctl, linuxUnitExists = oldFiles, oldCommands, oldRoot, oldSystemctl, oldUnitExists
 	}()
 	files := &recordingFiles{}
 	commands := &recordingCommands{}
@@ -145,6 +145,7 @@ func TestLinuxStopAndUninstallPreserveState(t *testing.T) {
 	platformCommands = commands
 	linuxRequireRoot = func() error { return nil }
 	linuxSystemctl = func() (string, error) { return "/test/systemctl", nil }
+	linuxUnitExists = func(string) (bool, error) { return true, nil }
 
 	if err := Stop(context.Background(), "office"); err != nil {
 		t.Fatal(err)

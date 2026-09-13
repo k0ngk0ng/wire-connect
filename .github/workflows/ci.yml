@@ -50,7 +50,6 @@ jobs:
 
   network-tun:
     name: tun-${{ matrix.name }}
-    needs: native
     strategy:
       fail-fast: false
       matrix:
@@ -116,14 +115,52 @@ jobs:
             throw 'The Windows TUN lifecycle test requires an elevated administrator runner.'
           }
           $env:WIRE_CONNECT_NETWORK_TEST = '1'
-          & "$env:GITHUB_WORKSPACE/.cache/network/platform.test.exe" -test.run '^TestOpenRealTUNLifecycle$' -test.timeout=2m -test.v
+          $testArgs = @('-test.run=^TestOpenRealTUNLifecycle$', '-test.timeout=2m', '-test.v')
+          & "$env:GITHUB_WORKSPACE/.cache/network/platform.test.exe" @testArgs
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
 
+  nat:
+    name: nat-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOPATH: ${{ github.workspace }}/.cache/go
+      GOTMPDIR: ${{ github.workspace }}/.cache/tmp
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$GOTMPDIR" "$GITHUB_WORKSPACE/.cache/nat"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install NAT test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y coreutils curl iproute2 iptables openssl procps
+      - name: Build NAT test binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -trimpath -buildvcs=false -o .cache/nat/wirectl-connect ./cmd/wirectl-connect
+          CGO_ENABLED=0 go build -trimpath -buildvcs=false -o .cache/nat/wire-connect-testutil ./cmd/wire-connect-testutil
+      - name: Run disposable NAT integration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env WIRE_CONNECT_NAT_TEST=1 \
+            "$GITHUB_WORKSPACE/scripts/test-nat.sh" \
+            "$GITHUB_WORKSPACE/.cache/nat/wirectl-connect" \
+            "$GITHUB_WORKSPACE/.cache/nat/wire-connect-testutil"
+
   govulncheck:
     name: govulncheck
-    needs: native
     runs-on: ubuntu-24.04
     env:
       GOCACHE: ${{ github.workspace }}/.cache/go-build
@@ -145,7 +182,6 @@ jobs:
 
   crossbuild:
     name: cross-build
-    needs: native
     runs-on: ubuntu-24.04
     env:
       GOCACHE: ${{ github.workspace }}/.cache/go-build

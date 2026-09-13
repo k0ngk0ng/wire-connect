@@ -18,6 +18,7 @@ var (
 	platformCommands commandRunner = execCommandRunner{}
 	linuxSystemctl                 = findSystemctl
 	linuxRequireRoot               = requireUnixRoot
+	linuxUnitExists                = linuxServiceRecordExists
 )
 
 func linuxNativeName(name string) string {
@@ -91,6 +92,13 @@ func Stop(ctx context.Context, name string) error {
 	if err := contextErr(ctx); err != nil {
 		return err
 	}
+	unitInstalled, err := linuxUnitExists(normalizedName)
+	if err != nil {
+		return err
+	}
+	if !unitInstalled {
+		return fmt.Errorf("%w: %q", ErrNotInstalled, normalizedName)
+	}
 	if err := linuxRequireRoot(); err != nil {
 		return err
 	}
@@ -117,6 +125,17 @@ func Uninstall(ctx context.Context, name string) error {
 	}
 	if err := contextErr(ctx); err != nil {
 		return err
+	}
+	unitInstalled, err := linuxUnitExists(normalizedName)
+	if err != nil {
+		return err
+	}
+	programInstalled, err := linuxInstalledDirExists(normalizedName)
+	if err != nil {
+		return err
+	}
+	if !unitInstalled && !programInstalled {
+		return nil
 	}
 	if err := linuxRequireRoot(); err != nil {
 		return err
@@ -180,6 +199,34 @@ func findSystemctl() (string, error) {
 		}
 	}
 	return "", errors.New("wire-connect: systemctl was not found at /usr/bin/systemctl or /bin/systemctl")
+}
+
+func linuxServiceRecordExists(name string) (bool, error) {
+	st, err := os.Lstat(linuxUnitPath(name))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("wire-connect: inspect systemd service record: %w", err)
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() {
+		return false, fmt.Errorf("wire-connect: systemd service record %q is not a regular file", linuxUnitPath(name))
+	}
+	return true, nil
+}
+
+func linuxInstalledDirExists(name string) (bool, error) {
+	st, err := os.Lstat(linuxInstalledDir(name))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("wire-connect: inspect installed service directory: %w", err)
+	}
+	if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		return false, fmt.Errorf("wire-connect: installed service directory %q is not a real directory", linuxInstalledDir(name))
+	}
+	return true, nil
 }
 
 func firstLine(out []byte) string {
@@ -254,6 +301,15 @@ func systemdQuote(value string) string {
 		case '\\', '"':
 			b.WriteByte('\\')
 			b.WriteByte(c)
+		case '$':
+			// systemd performs environment-variable expansion in ExecStart
+			// arguments even when the argument is quoted. A doubled dollar is
+			// the unit-file spelling for a literal dollar sign.
+			b.WriteString("$$")
+		case '%':
+			// Percent starts a systemd specifier. Escape it so profile paths
+			// and executable names are passed byte-for-byte to the process.
+			b.WriteString("%%")
 		case '\n':
 			b.WriteString(`\n`)
 		case '\r':

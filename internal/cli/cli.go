@@ -4,6 +4,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -118,7 +119,13 @@ func (c *common) store() (config.Store, error) {
 		return config.Store{}, err
 	}
 	s := config.Store{Dir: dir}
-	return s, s.Init()
+	if err := s.Init(); err != nil {
+		return config.Store{}, err
+	}
+	// Resolve platform aliases such as macOS /var after validating the final
+	// state directory, so services and local IPC use the same canonical path.
+	s.Dir, err = filepath.EvalSymlinks(dir)
+	return s, err
 }
 
 // parse accepts options before or after the two positional arguments without
@@ -290,12 +297,14 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 		if err != nil {
 			return err
 		}
+		*iface = defaultInterface(*iface, c.name)
 		p.Interface, p.MTU, p.STUNURL, p.RelayOnly = *iface, *mtu, *stun, *relayOnly
 		if err := s.Write("profile-"+c.name, p); err != nil {
 			return err
 		}
 		fmt.Fprintf(a.out, "Paired · local %s · peer %s\n", p.LocalIP, p.PeerIP)
 	}
+	*iface = defaultInterface(*iface, c.name)
 	if *background {
 		p.Interface, p.MTU, p.STUNURL, p.RelayOnly = *iface, *mtu, *stun, *relayOnly
 		if err := s.Write("profile-"+c.name, p); err != nil {
@@ -335,6 +344,16 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 			lastMode = next.Mode
 		}
 	}})
+}
+
+func defaultInterface(requested, name string) string {
+	if requested != "" || name == "default" || runtime.GOOS == "darwin" {
+		return requested
+	}
+	// Give named connections independent interfaces while staying within
+	// Linux's 15-byte limit. macOS allocates utun numbers itself.
+	digest := sha256.Sum256([]byte(name))
+	return fmt.Sprintf("wc%x", digest[:6])
 }
 
 func authorized(s config.Store, server string) (*client.Client, error) {
@@ -400,7 +419,9 @@ func (a app) stop(ctx context.Context, args []string) error {
 	if *remove {
 		serviceErr = service.Uninstall(ctx, c.name)
 	}
-	if serviceErr!=nil&&!errors.Is(serviceErr,service.ErrNotInstalled){return serviceErr}
+	if serviceErr != nil && !errors.Is(serviceErr, service.ErrNotInstalled) {
+		return serviceErr
+	}
 	if ipcErr != nil && serviceErr != nil {
 		return errors.Join(ipcErr, serviceErr)
 	}

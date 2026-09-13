@@ -140,6 +140,8 @@ func New(cfg Config) (*Server, error) {
 	if generated && cfg.EnrollmentOutput != nil {
 		fmt.Fprintf(cfg.EnrollmentOutput, "Enrollment token (save now; shown once): %s\n", cfg.EnrollmentToken)
 	}
+	s.cfg.EnrollmentToken = ""
+	cfg.EnrollmentToken = ""
 	return s, nil
 }
 

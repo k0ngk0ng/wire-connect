@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/k0ngk0ng/wire-connect/internal/config"
 )
 
 func TestListenStatusStop(t *testing.T) {
@@ -259,13 +261,14 @@ func testDirectory(t *testing.T) string {
 	if err := os.MkdirAll(base, 0700); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := os.MkdirTemp(base, "profile-")
+	rootDir, err := os.MkdirTemp(base, "p")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
+	dir := filepath.Join(rootDir, "state")
+	if err := (config.Store{Dir: dir}).Init(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(rootDir) })
 	return dir
 }

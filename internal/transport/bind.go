@@ -663,10 +663,47 @@ func (b *Bind) dialRelay() (*relaySession, error) {
 	}
 	nc := websocket.NetConn(b.ctx, ws, websocket.MessageBinary)
 	brw := bufio.NewReadWriter(bufio.NewReader(nc), bufio.NewWriter(nc))
+	// websocket.Dial only completes the HTTP upgrade. DERP still has an
+	// application handshake: NewClient sends our client key, then the server
+	// verifies/admit the key and sends ServerInfo. Do not publish this session
+	// to Send or WaitRelay until that response has been consumed; otherwise a
+	// packet sent immediately after WaitRelay can race server registration and
+	// be dropped by DERP.
+	handshakeDone := make(chan struct{})
+	var handshakeMu sync.Mutex
+	handshaking := true
+	go func() {
+		select {
+		case <-ctx.Done():
+			handshakeMu.Lock()
+			if handshaking {
+				_ = nc.Close()
+			}
+			handshakeMu.Unlock()
+		case <-handshakeDone:
+		}
+	}()
+	finishHandshake := func() {
+		handshakeMu.Lock()
+		handshaking = false
+		handshakeMu.Unlock()
+		close(handshakeDone)
+	}
 	client, err := derp.NewClient(b.private, nc, brw, b.derpLogf(), derp.CanAckPings(true))
 	if err != nil {
+		finishHandshake()
 		_ = nc.Close()
 		return nil, err
+	}
+	msg, err := client.Recv()
+	finishHandshake()
+	if err != nil {
+		_ = nc.Close()
+		return nil, fmt.Errorf("derp handshake: %w", err)
+	}
+	if _, ok := msg.(derp.ServerInfoMessage); !ok {
+		_ = nc.Close()
+		return nil, fmt.Errorf("derp handshake: expected server info, got %T", msg)
 	}
 	return &relaySession{nc: nc, client: client}, nil
 }

@@ -61,4 +61,110 @@ func TestRefuseSymlinkAndPublicSecrets(t *testing.T) {
 	if err := s.Read("unsafe", &got); err == nil {
 		t.Fatal("read world-readable secrets")
 	}
+	before, err := os.ReadFile(filepath.Join(s.Dir, "unsafe.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write("unsafe", map[string]string{"changed": "no"}); err == nil {
+		t.Fatal("wrote world-readable secret")
+	}
+	after, err := os.ReadFile(filepath.Join(s.Dir, "unsafe.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("modified public state file: before %q, after %q", before, after)
+	}
+}
+
+func TestStoreInitRefusesExistingPublicDirectoryWithoutChangingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permissions; Windows uses a protected DACL")
+	}
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := before.Mode().Perm(); got != 0755 {
+		t.Fatalf("test directory mode is %04o, want 0755", got)
+	}
+	if err := (Store{Dir: dir}).Init(); err == nil {
+		t.Fatal("accepted a non-private existing state directory")
+	}
+	after, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.Mode().Perm(); got != before.Mode().Perm() {
+		t.Fatalf("changed existing directory mode from %04o to %04o", before.Mode().Perm(), got)
+	}
+}
+
+func TestStoreInitRefusesFilesystemRootWithoutChangingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("filesystem root handling differs on Windows")
+	}
+	root := string(filepath.Separator)
+	before, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (Store{Dir: root}).Init(); err == nil {
+		t.Fatal("accepted filesystem root as state directory")
+	}
+	after, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.Mode().Perm(); got != before.Mode().Perm() {
+		t.Fatalf("changed filesystem root mode from %04o to %04o", before.Mode().Perm(), got)
+	}
+}
+
+func TestStoreInitRefusesFinalDirectorySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix symlink policy; Windows uses reparse-point checks")
+	}
+	d := t.TempDir()
+	target := filepath.Join(d, "target")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(d, "state")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Store{Dir: link}).Init(); err == nil {
+		t.Fatal("accepted a symlink as state directory")
+	}
+}
+
+func TestStoreRefusesForeignOwner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix ownership policy; Windows uses a protected DACL")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("changing ownership requires root")
+	}
+	foreignUID := 1
+	if foreignUID == os.Geteuid() {
+		foreignUID = 2
+	}
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(dir, foreignUID, -1); err != nil {
+		t.Skipf("cannot create foreign-owned test directory: %v", err)
+	}
+	if err := (Store{Dir: dir}).Init(); err == nil {
+		t.Fatal("accepted a private directory owned by another user")
+	}
 }

@@ -47,7 +47,7 @@ func checkPlatform(ctx context.Context) error {
 		return err
 	}
 	var errs []error
-	for _, command := range []string{"ifconfig", "route", "netstat"} {
+	for _, command := range []string{"ifconfig", "netstat"} {
 		if _, err := exec.LookPath(command); err != nil {
 			errs = append(errs, fmt.Errorf("wire-connect: %s command is required to configure the tunnel: %w", command, err))
 		}
@@ -74,11 +74,12 @@ func darwinSetupPlan(runner commandRunner, name string, cfg Config) setupPlan {
 	local := cfg.Local.String()
 	peer := cfg.Peer.String()
 	return setupPlan{steps: []setupStep{
-		commandStep(runner, "assign local IPv4 /32 address", "ifconfig",
-			[]string{name, "inet", local, "netmask", "255.255.255.255", "up"},
+		// utun is a point-to-point interface: macOS requires the destination
+		// address in this ifconfig form and installs the corresponding /32
+		// peer route as part of the operation.  Adding the same route again
+		// with route(8) fails with EEXIST on current macOS releases.
+		commandStep(runner, "assign local and peer IPv4 /32 addresses", "ifconfig",
+			[]string{name, "inet", local, peer, "netmask", "255.255.255.255", "up"},
 			"ifconfig", []string{name, "inet", local, "-alias"}),
-		commandStep(runner, "add peer host route", "route",
-			[]string{"-n", "add", "-host", peer, "-interface", name},
-			"route", []string{"-n", "delete", "-host", peer, "-interface", name}),
 	}}
 }

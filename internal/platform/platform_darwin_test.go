@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestDarwinSetupPlanUsesPointToPointAddressAndHostRoute(t *testing.T) {
+func TestDarwinSetupPlanUsesPointToPointAddress(t *testing.T) {
 	runner := &recordingRunner{}
 	plan := darwinSetupPlan(runner, "utun7", Config{
 		Name:  "utun7",
@@ -28,9 +28,7 @@ func TestDarwinSetupPlanUsesPointToPointAddressAndHostRoute(t *testing.T) {
 		}
 	}
 	want := []recordedCall{
-		{name: "ifconfig", args: []string{"utun7", "inet", "100.64.0.1", "netmask", "255.255.255.255", "up"}},
-		{name: "route", args: []string{"-n", "add", "-host", "100.64.0.2", "-interface", "utun7"}},
-		{name: "route", args: []string{"-n", "delete", "-host", "100.64.0.2", "-interface", "utun7"}},
+		{name: "ifconfig", args: []string{"utun7", "inet", "100.64.0.1", "100.64.0.2", "netmask", "255.255.255.255", "up"}},
 		{name: "ifconfig", args: []string{"utun7", "inet", "100.64.0.1", "-alias"}},
 	}
 	if got := runner.calls(); !reflect.DeepEqual(got, want) {

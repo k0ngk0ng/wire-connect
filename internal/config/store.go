@@ -47,17 +47,55 @@ func (s Store) Init() error {
 	if s.Dir == "" {
 		return errors.New("empty state directory")
 	}
-	if err := os.MkdirAll(s.Dir, 0700); err != nil {
+	dir := filepath.Clean(s.Dir)
+	if isRootDirectory(dir) {
+		return fmt.Errorf("state directory %q must be a dedicated directory, not a filesystem root", dir)
+	}
+
+	st, err := os.Lstat(dir)
+	if err == nil {
+		if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+			return errors.New("state directory must be a real directory")
+		}
+		// Existing directories are caller-owned. Never silently change an
+		// unknown directory's permissions or ACL; accept it only when it is
+		// already private according to the platform policy.
+		return checkPrivateDir(dir, st)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	st, err := os.Lstat(s.Dir)
+
+	// Create the final directory with an atomic Mkdir after preparing its
+	// parent. If another process wins the race, its directory is treated as
+	// existing and validated instead of having its permissions rewritten.
+	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
+		return err
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		st, statErr := os.Lstat(dir)
+		if statErr != nil {
+			return statErr
+		}
+		if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+			return errors.New("state directory must be a real directory")
+		}
+		return checkPrivateDir(dir, st)
+	}
+	if err := protect(dir, true); err != nil {
+		return fmt.Errorf("protect new state directory: %w", err)
+	}
+	st, err = os.Lstat(dir)
 	if err != nil {
 		return err
 	}
 	if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
 		return errors.New("state directory must be a real directory")
 	}
-	return protect(s.Dir, true)
+	return checkPrivateDir(dir, st)
 }
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
@@ -84,7 +122,7 @@ func (s Store) Read(name string, dst any) error {
 	if !st.Mode().IsRegular() {
 		return errors.New("state file must be a regular file")
 	}
-	if err := checkPrivate(st); err != nil {
+	if err := checkPrivate(p, st); err != nil {
 		return err
 	}
 	if st.Size() > 1<<20 {
@@ -108,9 +146,27 @@ func (s Store) Write(name string, value any) error {
 	if err != nil {
 		return err
 	}
-	if st, err := os.Lstat(p); err == nil && !st.Mode().IsRegular() {
-		return errors.New("refusing to replace non-regular state file")
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+	// Recheck the parent immediately before creating the temporary file. This
+	// keeps an atomic write from following a replaced directory/symlink after
+	// Init has already validated it.
+	dirInfo, err := os.Lstat(s.Dir)
+	if err != nil {
+		return err
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("state directory must be a real directory")
+	}
+	if err := checkPrivateDir(s.Dir, dirInfo); err != nil {
+		return err
+	}
+	if st, err := os.Lstat(p); err == nil {
+		if !st.Mode().IsRegular() || st.Mode()&os.ModeSymlink != 0 {
+			return errors.New("refusing to replace non-regular state file")
+		}
+		if err := checkPrivate(p, st); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	b, err := json.MarshalIndent(value, "", "  ")
@@ -137,10 +193,19 @@ func (s Store) Write(name string, value any) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := replaceFile(tmp, p); err != nil {
 		return err
 	}
 	return syncDir(s.Dir)
+}
+
+func isRootDirectory(path string) bool {
+	clean := filepath.Clean(path)
+	volume := filepath.VolumeName(clean)
+	if volume == "" {
+		return clean == string(filepath.Separator)
+	}
+	return clean == volume+string(filepath.Separator)
 }
 
 func (s Store) Credentials() (map[string]Credential, error) {

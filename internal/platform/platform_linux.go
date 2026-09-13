@@ -99,11 +99,11 @@ func linuxSetupPlan(runner commandRunner, name string, cfg Config) setupPlan {
 		commandStep(runner, "assign local IPv4 address", "ip",
 			[]string{"-4", "addr", "add", local, "dev", name},
 			"ip", []string{"-4", "addr", "del", local, "dev", name}),
-		commandStep(runner, "add peer host route", "ip",
-			[]string{"-4", "route", "add", peer, "dev", name},
-			"ip", []string{"-4", "route", "del", peer, "dev", name}),
 		commandStep(runner, "bring interface up", "ip",
 			[]string{"link", "set", "dev", name, "up"},
 			"ip", []string{"link", "set", "dev", name, "down"}),
+		commandStep(runner, "add peer host route", "ip",
+			[]string{"-4", "route", "add", peer, "dev", name},
+			"ip", []string{"-4", "route", "del", peer, "dev", name}),
 	}}
 }

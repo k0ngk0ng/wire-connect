@@ -29,10 +29,10 @@ func TestLinuxSetupPlanUsesOnlyScopedIPv4Commands(t *testing.T) {
 	}
 	want := []recordedCall{
 		{name: "ip", args: []string{"-4", "addr", "add", "100.64.0.1/32", "dev", "wc0"}},
-		{name: "ip", args: []string{"-4", "route", "add", "100.64.0.2/32", "dev", "wc0"}},
 		{name: "ip", args: []string{"link", "set", "dev", "wc0", "up"}},
-		{name: "ip", args: []string{"link", "set", "dev", "wc0", "down"}},
+		{name: "ip", args: []string{"-4", "route", "add", "100.64.0.2/32", "dev", "wc0"}},
 		{name: "ip", args: []string{"-4", "route", "del", "100.64.0.2/32", "dev", "wc0"}},
+		{name: "ip", args: []string{"link", "set", "dev", "wc0", "down"}},
 		{name: "ip", args: []string{"-4", "addr", "del", "100.64.0.1/32", "dev", "wc0"}},
 	}
 	if got := runner.calls(); !reflect.DeepEqual(got, want) {
