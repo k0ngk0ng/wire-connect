@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/tun"
@@ -26,9 +28,47 @@ func openPlatform(ctx context.Context, cfg Config) (tun.Device, func() error, er
 	if err != nil {
 		return nil, nil, fmt.Errorf("wire-connect: locate netsh.exe: %w", err)
 	}
-	return openWithPlan(ctx, cfg, tun.CreateTUN, execRunner{}, func(runner commandRunner, name string, config Config) setupPlan {
+	device, cleanup, err := openWithPlan(ctx, cfg, tun.CreateTUN, execRunner{}, func(runner commandRunner, name string, config Config) setupPlan {
 		return windowsSetupPlanWithBinary(runner, netsh, name, config)
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	// netsh can return while Windows still considers the address tentative.
+	// Report the TUN ready only after applications can bind its IPv4 address.
+	err = waitWindowsIPv4Ready(ctx, func() error {
+		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IP(cfg.Local.AsSlice())})
+		if err != nil {
+			return err
+		}
+		return conn.Close()
+	})
+	if err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("wire-connect: wait for local IPv4 address %s: %w", cfg.Local, err), cleanup())
+	}
+	return device, cleanup, nil
+}
+
+func waitWindowsIPv4Ready(ctx context.Context, probe func() error) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := probe()
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, windows.WSAEADDRNOTAVAIL) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func checkPlatform(ctx context.Context) error {

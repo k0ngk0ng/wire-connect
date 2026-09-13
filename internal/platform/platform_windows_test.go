@@ -4,10 +4,49 @@ package platform
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/netip"
 	"reflect"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/windows"
 )
+
+func TestWindowsIPv4ReadinessRetriesTentativeAddress(t *testing.T) {
+	calls := 0
+	err := waitWindowsIPv4Ready(context.Background(), func() error {
+		calls++
+		if calls < 3 {
+			return &net.OpError{Op: "listen", Err: windows.WSAEADDRNOTAVAIL}
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("readiness calls=%d error=%v", calls, err)
+	}
+}
+
+func TestWindowsIPv4ReadinessPreservesPermanentErrors(t *testing.T) {
+	calls := 0
+	err := waitWindowsIPv4Ready(context.Background(), func() error {
+		calls++
+		return windows.WSAEACCES
+	})
+	if !errors.Is(err, windows.WSAEACCES) || calls != 1 {
+		t.Fatalf("readiness calls=%d error=%v", calls, err)
+	}
+}
+
+func TestWindowsIPv4ReadinessHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := waitWindowsIPv4Ready(ctx, func() error { return windows.WSAEADDRNOTAVAIL })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("readiness error=%v", err)
+	}
+}
 
 func TestWindowsSetupPlanUsesDocumentedNetshForms(t *testing.T) {
 	runner := &recordingRunner{}
