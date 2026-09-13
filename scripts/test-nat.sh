@@ -428,14 +428,14 @@ test_inner_traffic() {
 run_pair() {
 	local label="$1" code="$2" expected_mode="$3" state_a="$4" state_b="$5" network="$6"
 	STATUS_ENTRIES+=("$label|$NS_CLIENT_A|$state_a" "$label|$NS_CLIENT_B|$state_b")
-	start_process "$label-host" "$NS_CLIENT_A" "$RUN_ROOT/$label-host.stdout" "$RUN_ROOT/$label-host.stderr" "$CONNECT_BIN" "$SERVER_URL" --state-dir "$state_a" --name "$label" --code "$code" --network "$network" --interface "wc$label" --verbose
+	start_process "$label-host" "$NS_CLIENT_A" "$RUN_ROOT/$label-host.stdout" "$RUN_ROOT/$label-host.stderr" "$CONNECT_BIN" "$SERVER_URL" --state-dir "$state_a" --name "$label" --code "$code" --network "$network" --interface "wc$label" --foreground --verbose
 	local deadline=$((SECONDS + 15))
 	until grep -q '^Pairing code:' "$RUN_ROOT/$label-host.stdout"; do
 		(( SECONDS < deadline )) || fail "$label host did not create its pairing room"
 		kill -0 "${PROCESS_PIDS["$label-host"]}" 2>/dev/null || fail "$label host exited during pairing"
 		sleep 0.1
 	done
-	start_process "$label-guest" "$NS_CLIENT_B" "$RUN_ROOT/$label-guest.stdout" "$RUN_ROOT/$label-guest.stderr" "$CONNECT_BIN" "$SERVER_URL" "$code" --state-dir "$state_b" --name "$label" --network "$network" --interface "wc$label" --verbose
+	start_process "$label-guest" "$NS_CLIENT_B" "$RUN_ROOT/$label-guest.stdout" "$RUN_ROOT/$label-guest.stderr" "$CONNECT_BIN" "$SERVER_URL" "$code" --state-dir "$state_b" --name "$label" --network "$network" --interface "wc$label" --foreground --verbose
 	wait_for_mode "$label" "$NS_CLIENT_A" "$state_a" "$expected_mode"
 	wait_for_mode "$label" "$NS_CLIENT_B" "$state_b" "$expected_mode"
 }

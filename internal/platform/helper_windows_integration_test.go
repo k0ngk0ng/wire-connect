@@ -5,6 +5,8 @@ package platform
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,8 +40,8 @@ type windowsHelperTestReceipt struct {
 
 // TestRealNetworkHelperLifecycle exercises the Windows privilege split with
 // the real named-pipe endpoint and Wintun adapter. The test process owns the
-// elevated helper and its adapter; the separately built client runs with the
-// linked, non-elevated UAC token and uses nethelper.Open over IPC.
+// elevated helper and its adapter; the separately built client runs with a
+// non-elevated token and uses nethelper.Open over IPC.
 //
 // Set WIRE_CONNECT_NETWORK_TEST=1 and WIRE_CONNECT_HELPER_TESTUTIL to a
 // separately built cmd/wire-connect-helper-testutil.exe. The test must run in
@@ -53,8 +55,16 @@ func TestRealNetworkHelperLifecycle(t *testing.T) {
 		t.Fatal("WIRE_CONNECT_NETWORK_TEST=1 requires an elevated Administrator test process")
 	}
 	utility := windowsHelperTestUtility(t)
-	linked, identity := windowsLimitedToken(t)
-	defer linked.Close()
+	linked, identity, cleanupIdentity := windowsLimitedToken(t)
+	defer func() {
+		_ = linked.Close()
+		if cleanupIdentity != nil {
+			if err := cleanupIdentity(); err != nil {
+				t.Errorf("remove temporary Windows test account: %v", err)
+			}
+		}
+	}()
+	utility = stageWindowsHelperTestUtility(t, utility, identity)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -165,84 +175,261 @@ func windowsHelperTestUtility(t *testing.T) string {
 	return filepath.Clean(abs)
 }
 
-func windowsLimitedToken(t *testing.T) (windows.Token, string) {
+func windowsLimitedToken(t *testing.T) (windows.Token, string, func() error) {
 	t.Helper()
 	current := windows.GetCurrentProcessToken()
 	linked, err := current.GetLinkedToken()
 	if err == nil {
 		if linked.IsElevated() {
 			linked.Close()
-			t.Fatal("linked UAC token is still elevated")
+		} else {
+			return windowsTokenIdentity(t, linked)
 		}
-		return windowsTokenIdentity(t, linked)
 	}
 
 	// Hosted Windows runners may have UAC disabled and consequently expose no
-	// linked token. Create a primary restricted token in that case instead of
-	// weakening this test to an elevated child. Disable the Administrators SID
-	// as well as every privilege so the child is unambiguously non-elevated.
-	restricted, restrictedErr := createRestrictedToken()
-	if restrictedErr != nil {
-		t.Fatalf("get a non-elevated UAC token (%v) and create a restricted token: %v", err, restrictedErr)
+	// usable linked token. Create an actual standard local account in that case
+	// instead of weakening this test to an elevated or restricted child.
+	account, accountErr := newTemporaryWindowsAccount()
+	if accountErr != nil {
+		t.Fatalf("get a non-elevated UAC token (%v) and create a temporary standard account: %v", err, accountErr)
 	}
-	if restricted.IsElevated() {
-		restricted.Close()
-		t.Fatalf("restricted child token is still elevated (linked token error: %v)", err)
+	token, loginErr := account.login()
+	if loginErr != nil {
+		_ = account.remove()
+		t.Fatalf("log on to temporary standard account: %v", loginErr)
 	}
-	return windowsTokenIdentity(t, restricted)
+	if token.IsElevated() {
+		_ = token.Close()
+		_ = account.remove()
+		t.Fatal("temporary standard account token is elevated")
+	}
+	sid, sidErr := tokenSID(token)
+	if sidErr != nil {
+		_ = token.Close()
+		_ = account.remove()
+		t.Fatalf("read temporary standard account SID: %v", sidErr)
+	}
+	return token, sid, account.remove
 }
 
-func windowsTokenIdentity(t *testing.T, token windows.Token) (windows.Token, string) {
+func windowsTokenIdentity(t *testing.T, token windows.Token) (windows.Token, string, func() error) {
 	t.Helper()
-	user, err := token.GetTokenUser()
-	if err != nil || user == nil || user.User.Sid == nil {
+	sid, err := tokenSID(token)
+	if err != nil {
 		token.Close()
 		t.Fatalf("read non-elevated child token SID: %v", err)
 	}
-	return token, user.User.Sid.String()
+	return token, sid, nil
 }
 
-const disableMaxPrivilege = 0x1
-
-var advapi32 = windows.NewLazySystemDLL("advapi32.dll")
-
-func createRestrictedToken() (windows.Token, error) {
-	// GetCurrentProcessToken returns a pseudo handle. Open a real token with
-	// the access CreateRestrictedToken requires; this also works on systems
-	// where UAC is disabled and TokenLinkedToken is unavailable.
-	var source windows.Token
-	access := uint32(windows.TOKEN_DUPLICATE | windows.TOKEN_ASSIGN_PRIMARY | windows.TOKEN_QUERY | windows.TOKEN_ADJUST_DEFAULT | windows.TOKEN_ADJUST_GROUPS | windows.TOKEN_ADJUST_PRIVILEGES)
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), access, &source); err != nil {
-		return 0, fmt.Errorf("open current process token: %w", err)
-	}
-	defer source.Close()
-	var admins *windows.SID
-	var err error
-	admins, err = windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+func tokenSID(token windows.Token) (string, error) {
+	user, err := token.GetTokenUser()
 	if err != nil {
-		return 0, fmt.Errorf("create Administrators SID: %w", err)
+		return "", err
 	}
-	disable := windows.SIDAndAttributes{Sid: admins}
-	var restricted windows.Token
-	proc := advapi32.NewProc("CreateRestrictedToken")
+	if user == nil || user.User.Sid == nil {
+		return "", errors.New("token has no user SID")
+	}
+	return user.User.Sid.String(), nil
+}
+
+func stageWindowsHelperTestUtility(t *testing.T, source, userSID string) string {
+	t.Helper()
+	windowsDir, err := windows.GetWindowsDirectory()
+	if err != nil {
+		t.Fatalf("locate Windows directory for standard-user test staging: %v", err)
+	}
+	root := filepath.Join(windowsDir, "Temp")
+	dir, err := os.MkdirTemp(root, "wire-connect-helper-")
+	if err != nil {
+		t.Fatalf("create standard-user-readable helper staging directory: %v", err)
+	}
+	destination := filepath.Join(dir, "wire-connect-helper-testutil.exe")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("read helper test utility for staging: %v", err)
+	}
+	if err := os.WriteFile(destination, data, 0755); err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("stage helper test utility for standard user: %v", err)
+	}
+	if err := setWindowsHelperTestACL(dir, destination, userSID); err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("protect staged helper test utility from standard-user writes: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore a writable DACL before removal in case cleanup runs under a
+		// token that is not a member of the Administrators group.
+		_ = setWindowsHelperTestACL(dir, destination, "")
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove helper staging directory: %v", err)
+		}
+	})
+	return destination
+}
+
+func setWindowsHelperTestACL(directory, file, userSID string) error {
+	if userSID == "" {
+		// Cleanup is normally still elevated, so the original inherited ACL is
+		// sufficient after the explicit test ACL has been removed by replacing it
+		// with an administrator-owned protected descriptor.
+		userSID = "BA"
+	}
+	directorySDDL := "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;" + userSID + ")"
+	fileSDDL := "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;" + userSID + ")"
+	if err := setWindowsHelperObjectACL(directory, directorySDDL); err != nil {
+		return fmt.Errorf("set staging directory ACL: %w", err)
+	}
+	if err := setWindowsHelperObjectACL(file, fileSDDL); err != nil {
+		return fmt.Errorf("set staged helper file ACL: %w", err)
+	}
+	return nil
+}
+
+func setWindowsHelperObjectACL(path, sddl string) error {
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil)
+}
+
+type temporaryWindowsAccount struct {
+	name     string
+	password string
+}
+
+type windowsUserInfo1 struct {
+	Name        *uint16
+	Password    *uint16
+	PasswordAge uint32
+	Priv        uint32
+	HomeDir     *uint16
+	Comment     *uint16
+	Flags       uint32
+	ScriptPath  *uint16
+}
+
+const (
+	userPrivUser                   = 1
+	userFlagScript                 = 0x0001
+	logon32LogonInteractive        = 2
+	logon32ProviderDefault         = 0
+	nerrUserExists          uint32 = 2224
+	nerrUserNotFound        uint32 = 2221
+)
+
+var (
+	netapi32 = windows.NewLazySystemDLL("netapi32.dll")
+	advapi32 = windows.NewLazySystemDLL("advapi32.dll")
+)
+
+func newTemporaryWindowsAccount() (*temporaryWindowsAccount, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		var randomName [4]byte
+		if _, err := rand.Read(randomName[:]); err != nil {
+			return nil, fmt.Errorf("generate temporary account name: %w", err)
+		}
+		name := "wct" + fmt.Sprintf("%x", randomName[:])
+		var randomPassword [24]byte
+		if _, err := rand.Read(randomPassword[:]); err != nil {
+			return nil, fmt.Errorf("generate temporary account password: %w", err)
+		}
+		password := base64.RawURLEncoding.EncodeToString(randomPassword[:]) + "aA1!"
+		name16, err := windows.UTF16PtrFromString(name)
+		if err != nil {
+			return nil, fmt.Errorf("encode temporary account name: %w", err)
+		}
+		password16, err := windows.UTF16PtrFromString(password)
+		if err != nil {
+			return nil, fmt.Errorf("encode temporary account password: %w", err)
+		}
+		info := windowsUserInfo1{Name: name16, Password: password16, Priv: userPrivUser, Flags: userFlagScript}
+		code, err := netUserAdd(&info)
+		if err != nil {
+			if code == nerrUserExists {
+				continue
+			}
+			return nil, fmt.Errorf("NetUserAdd temporary standard account: %w", err)
+		}
+		return &temporaryWindowsAccount{name: name, password: password}, nil
+	}
+	return nil, errors.New("could not choose a unique temporary account name")
+}
+
+func (a *temporaryWindowsAccount) login() (windows.Token, error) {
+	name, err := windows.UTF16PtrFromString(a.name)
+	if err != nil {
+		return 0, err
+	}
+	password, err := windows.UTF16PtrFromString(a.password)
+	if err != nil {
+		return 0, err
+	}
+	domain, err := windows.UTF16PtrFromString(".")
+	if err != nil {
+		return 0, err
+	}
+	var token windows.Token
+	proc := advapi32.NewProc("LogonUserW")
 	r, _, callErr := proc.Call(
-		uintptr(source),
-		uintptr(disableMaxPrivilege),
-		uintptr(1),
-		uintptr(unsafe.Pointer(&disable)),
-		0,
-		0,
-		0,
-		0,
-		uintptr(unsafe.Pointer(&restricted)),
+		uintptr(unsafe.Pointer(name)),
+		uintptr(unsafe.Pointer(domain)),
+		uintptr(unsafe.Pointer(password)),
+		logon32LogonInteractive,
+		logon32ProviderDefault,
+		uintptr(unsafe.Pointer(&token)),
 	)
 	if r == 0 {
 		if callErr == nil {
 			callErr = windows.GetLastError()
 		}
-		return 0, fmt.Errorf("CreateRestrictedToken: %w", callErr)
+		return 0, fmt.Errorf("LogonUserW temporary standard account: %w", callErr)
 	}
-	return restricted, nil
+	return token, nil
+}
+
+func (a *temporaryWindowsAccount) remove() error {
+	name, err := windows.UTF16PtrFromString(a.name)
+	if err != nil {
+		return err
+	}
+	code, callErr := netUserDel(name)
+	if callErr != nil && code != nerrUserNotFound {
+		return callErr
+	}
+	return nil
+}
+
+func netUserAdd(info *windowsUserInfo1) (uint32, error) {
+	proc := netapi32.NewProc("NetUserAdd")
+	r, _, _ := proc.Call(0, 1, uintptr(unsafe.Pointer(info)), 0)
+	code := uint32(r)
+	if code != 0 {
+		return code, fmt.Errorf("NetUserAdd returned code %d: %w", code, windows.Errno(code))
+	}
+	return 0, nil
+}
+
+func netUserDel(name *uint16) (uint32, error) {
+	proc := netapi32.NewProc("NetUserDel")
+	r, _, callErr := proc.Call(0, uintptr(unsafe.Pointer(name)))
+	code := uint32(r)
+	if code != 0 {
+		if callErr == nil {
+			callErr = windows.Errno(code)
+		}
+		return code, fmt.Errorf("NetUserDel returned code %d: %w", code, callErr)
+	}
+	return 0, nil
 }
 
 func runWindowsLimitedProcess(ctx context.Context, token windows.Token, path string, args []string) (stdout, stderr string, err error) {
@@ -255,6 +442,7 @@ func runWindowsLimitedProcess(ctx context.Context, token windows.Token, path str
 		Token:      syscall.Token(token),
 		HideWindow: true,
 	}
+	cmd.Dir = filepath.Dir(path)
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut

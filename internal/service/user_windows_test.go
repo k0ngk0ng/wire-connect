@@ -4,9 +4,11 @@ package service
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 type windowsUserSequenceCommands struct {
@@ -58,16 +60,22 @@ func TestWindowsUserTaskNameIsScopedToCurrentSID(t *testing.T) {
 }
 
 func TestWindowsUserTaskXMLIsInteractivePersistentAndShellSafe(t *testing.T) {
-	data := string(windowsUserTaskXML(`C:\Users\test user\wire-connect\office\wirectl-connect.exe`, []string{
+	raw := windowsUserTaskXML(`C:\Users\test user\wire-connect\office\wirectl-connect.exe`, []string{
 		"resume", "--name", "office", "--state-dir", `C:\Users\test user\state&bad`, "--foreground",
-	}, "S-1-5-21-100-200-300-400"))
+	}, "S-1-5-21-100-200-300-400")
+	if len(raw) < 2 || raw[0] != 0xff || raw[1] != 0xfe {
+		t.Fatalf("task XML is not UTF-16LE with BOM: %x", raw[:min(len(raw), 8)])
+	}
+	data := decodeWindowsUTF16LE(t, raw)
 	for _, want := range []string{
+		"<?xml version=\"1.0\" encoding=\"UTF-16\"?>",
 		"<LogonTrigger>",
 		"<UserId>S-1-5-21-100-200-300-400</UserId>",
 		"<LogonType>InteractiveToken</LogonType>",
 		"<RunLevel>LeastPrivilege</RunLevel>",
 		"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
-		"<RestartOnFailure><Interval>PT1M</Interval><Count>2147483647</Count></RestartOnFailure>",
+		"<AllowHardTerminate>true</AllowHardTerminate>",
+		"<RestartOnFailure><Interval>PT1M</Interval><Count>255</Count></RestartOnFailure>",
 		"resume --name office --state-dir",
 		"&amp;",
 	} {
@@ -78,6 +86,36 @@ func TestWindowsUserTaskXMLIsInteractivePersistentAndShellSafe(t *testing.T) {
 	if strings.Contains(data, "schtasks") || strings.Contains(data, "cmd.exe") {
 		t.Fatalf("task XML unexpectedly invokes a shell:\n%s", data)
 	}
+	var parsed struct {
+		Settings struct {
+			RestartOnFailure struct {
+				Count int `xml:"Count"`
+			} `xml:"RestartOnFailure"`
+		} `xml:"Settings"`
+	}
+	// data has already been decoded from the UTF-16LE task bytes above. Change
+	// the declaration on the parsing copy so encoding/xml sees a self-consistent
+	// UTF-8 document; the production XML bytes and their UTF-16 declaration are
+	// asserted separately above.
+	parseData := strings.Replace(data, `encoding="UTF-16"`, `encoding="UTF-8"`, 1)
+	if err := xml.Unmarshal([]byte(parseData), &parsed); err != nil {
+		t.Fatalf("decode task XML: %v", err)
+	}
+	if parsed.Settings.RestartOnFailure.Count < 1 || parsed.Settings.RestartOnFailure.Count > 255 {
+		t.Fatalf("restart count = %d; want 1..255", parsed.Settings.RestartOnFailure.Count)
+	}
+}
+
+func decodeWindowsUTF16LE(t *testing.T, data []byte) string {
+	t.Helper()
+	if len(data) < 2 || data[0] != 0xff || data[1] != 0xfe || (len(data)-2)%2 != 0 {
+		t.Fatalf("invalid UTF-16LE data: %x", data[:min(len(data), 8)])
+	}
+	units := make([]uint16, (len(data)-2)/2)
+	for i := range units {
+		units[i] = uint16(data[2+i*2]) | uint16(data[2+i*2+1])<<8
+	}
+	return string(utf16.Decode(units))
 }
 
 func TestWindowsUserTaskStateScriptEscapesTaskPathAndName(t *testing.T) {

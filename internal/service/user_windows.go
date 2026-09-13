@@ -347,7 +347,7 @@ func windowsUserSIDString() (string, error) {
 
 func windowsUserTaskXML(executable string, args []string, sid string) []byte {
 	var b bytes.Buffer
-	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n")
+	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n")
 	b.WriteString("<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\" version=\"1.4\">\r\n")
 	b.WriteString("  <RegistrationInfo><Author>")
 	windowsUserXMLEscape(&b, sid)
@@ -362,7 +362,7 @@ func windowsUserTaskXML(executable string, args []string, sid string) []byte {
 	b.WriteString("    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\r\n")
 	b.WriteString("    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\r\n")
 	b.WriteString("    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\r\n")
-	b.WriteString("    <AllowHardTerminate>false</AllowHardTerminate>\r\n")
+	b.WriteString("    <AllowHardTerminate>true</AllowHardTerminate>\r\n")
 	b.WriteString("    <StartWhenAvailable>true</StartWhenAvailable>\r\n")
 	b.WriteString("    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>\r\n")
 	b.WriteString("    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>\r\n")
@@ -372,7 +372,7 @@ func windowsUserTaskXML(executable string, args []string, sid string) []byte {
 	b.WriteString("    <RunOnlyIfIdle>false</RunOnlyIfIdle>\r\n")
 	b.WriteString("    <WakeToRun>false</WakeToRun>\r\n")
 	b.WriteString("    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\r\n")
-	b.WriteString("    <RestartOnFailure><Interval>PT1M</Interval><Count>2147483647</Count></RestartOnFailure>\r\n")
+	b.WriteString("    <RestartOnFailure><Interval>PT1M</Interval><Count>255</Count></RestartOnFailure>\r\n")
 	b.WriteString("    <Priority>7</Priority>\r\n")
 	b.WriteString("  </Settings>\r\n")
 	b.WriteString("  <Actions Context=\"Author\"><Exec><Command>")
@@ -390,7 +390,18 @@ func windowsUserTaskXML(executable string, args []string, sid string) []byte {
 	windowsUserXMLEscape(&b, filepathDir(executable))
 	b.WriteString("</WorkingDirectory></Exec></Actions>\r\n")
 	b.WriteString("</Task>\r\n")
-	return b.Bytes()
+	return windowsUserUTF16LEBOM(b.Bytes())
+}
+
+func windowsUserUTF16LEBOM(utf8XML []byte) []byte {
+	encoded := utf16.Encode([]rune(string(utf8XML)))
+	data := make([]byte, 2+len(encoded)*2)
+	data[0], data[1] = 0xff, 0xfe
+	for i, r := range encoded {
+		data[2+i*2] = byte(r)
+		data[2+i*2+1] = byte(r >> 8)
+	}
+	return data
 }
 
 func windowsUserXMLEscape(b *bytes.Buffer, value string) {

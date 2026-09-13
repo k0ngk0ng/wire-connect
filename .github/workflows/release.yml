@@ -94,6 +94,13 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
+          Connect and resume now keep the connection in the background by default.
+          Run setup once to authorize a network helper, then use your ordinary
+          account for daily commands. Use --foreground for a temporary session.
+          status --watch shows the direct UDP endpoint, independent direct/relay
+          byte counters and the last WireGuard handshake; Ctrl+C only closes the view.
+          update supports online releases and verified offline archives.
+
           Pair two devices with a short code and access the peer through its
           WireGuard virtual IP. ICE/STUN prefers UDP direct connectivity;
           authenticated HTTPS/DERP relay is used when direct access fails.

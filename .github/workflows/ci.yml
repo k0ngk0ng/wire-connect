@@ -32,6 +32,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     env:
+      WIRE_CONNECT_UPDATE_ADMIN_TEST: '1'
       GOCACHE: ${{ github.workspace }}/.cache/go-build
       GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
       GOPATH: ${{ github.workspace }}/.cache/go

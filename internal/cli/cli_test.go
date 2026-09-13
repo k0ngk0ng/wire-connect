@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"github.com/k0ngk0ng/wire-connect/internal/netsetup"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,7 +27,7 @@ func TestInterspersedFlags(t *testing.T) {
 }
 
 func TestHelpAndVersionDoNotNeedState(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"version"}, {"completion", "bash"}, {"completion", "zsh"}} {
+	for _, args := range [][]string{{"--help"}, {"version"}, {"setup", "--help"}, {"completion", "bash"}, {"completion", "zsh"}} {
 		var out, errOut bytes.Buffer
 		if err := Run(context.Background(), args, "1.2.3", bytes.NewReader(nil), &out, &errOut); err != nil {
 			t.Fatal(err)
@@ -48,7 +49,7 @@ func TestNamedConnectionsUseIndependentInterfaces(t *testing.T) {
 	if got := defaultInterface("custom0", "office"); got != "custom0" {
 		t.Fatalf("explicit interface changed to %q", got)
 	}
-	if got := defaultInterface("", "default"); got != "" {
+	if got := defaultInterface("", "default"); (runtime.GOOS == "darwin" || netsetup.Elevated()) && got != "" {
 		t.Fatalf("default interface changed to %q", got)
 	}
 	a, b := defaultInterface("", "office"), defaultInterface("", "home")

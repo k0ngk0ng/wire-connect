@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,15 +24,19 @@ import (
 	"github.com/k0ngk0ng/wire-connect/internal/config"
 	"github.com/k0ngk0ng/wire-connect/internal/endpoint"
 	"github.com/k0ngk0ng/wire-connect/internal/localctl"
+	"github.com/k0ngk0ng/wire-connect/internal/netsetup"
 	"github.com/k0ngk0ng/wire-connect/internal/platform"
 	"github.com/k0ngk0ng/wire-connect/internal/server"
 	"github.com/k0ngk0ng/wire-connect/internal/service"
+	"github.com/k0ngk0ng/wire-connect/internal/update"
 	"golang.org/x/term"
 )
 
 const help = `Encrypted point-to-point networking.
 
 Usage:
+  wirectl connect setup                        Enable networking for this user
+  wirectl connect update                       Install the latest release
   wirectl connect login <server>               Authorize this device once
   wirectl connect <server>                     Create a short pairing code
   wirectl connect <server> <code>              Join the other device
@@ -46,14 +51,15 @@ Usage:
 Options:
   --state-dir <path>   Private credentials and profiles directory
   --name <name>        Saved connection name (default: default)
-  --background        Install and start an operating-system service
+  --foreground        Run until Ctrl+C (default: background connection)
   --http              Serve plain HTTP on loopback for a reverse proxy
   --network <CIDR>     Virtual address range (default: 100.64.0.0/10)
   --relay-only        Use the encrypted HTTPS relay without UDP probing
   --verbose           Show connection diagnostics
 
 The standalone wirectl-connect executable accepts the same arguments.
-Creating a virtual interface requires administrator privileges.
+Network helper setup requests administrator authorization once.
+Daily commands use your current account. status --watch shows live path counters.
 `
 
 type app struct {
@@ -78,6 +84,20 @@ func Run(ctx context.Context, args []string, version string, in io.Reader, out, 
 		return nil
 	case "completion":
 		return a.completion(args[1:])
+	case "setup":
+		err = a.setup(ctx, args[1:])
+	case "update":
+		err = a.update(ctx, args[1:])
+	case "__setup-network":
+		return a.networkCommand(ctx, args[1:], true)
+	case "__network-helper":
+		return a.networkCommand(ctx, args[1:], false)
+	case "__refresh-update":
+		return a.refreshUpdate(ctx, args[1:])
+	case "__apply-update":
+		return update.Apply(ctx, args[1:], a.out)
+	case "__cleanup-update":
+		return update.Cleanup(ctx, args[1:], a.out)
 	case "login":
 		err = a.login(ctx, args[1:])
 	case "serve":
@@ -232,7 +252,8 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 	if err != nil {
 		return err
 	}
-	background := f.Bool("background", false, "install and start a background service")
+	background := f.Bool("background", true, "keep the connection running in the background")
+	foreground := f.Bool("foreground", false, "run until Ctrl+C instead of keeping a background connection")
 	network := f.String("network", "100.64.0.0/10", "private virtual address range")
 	iface := f.String("interface", "", "virtual interface name")
 	mtu := f.Int("mtu", 1420, "virtual interface MTU")
@@ -241,9 +262,12 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 	verbose := f.Bool("verbose", false, "show connection diagnostics")
 	codeFlag := f.String("code", "", "create a room using this pairing code")
 	replace := f.Bool("replace", false, "replace this saved pair after authenticating a new peer")
-	_ = f.Bool("service", false, "internal operating-system service mode")
+	serviceMode := f.Bool("service", false, "internal operating-system service mode")
 	if err := parse(f, args); err != nil {
 		return err
+	}
+	if *foreground || *serviceMode {
+		*background = false
 	}
 	s, err := c.store()
 	if err != nil {
@@ -275,9 +299,6 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 		if f.NArg() < 1 || f.NArg() > 2 {
 			return errors.New("usage: wirectl connect <server> [code]")
 		}
-		if err := platform.Check(ctx); err != nil {
-			return err
-		}
 		var previous config.Profile
 		if err := s.Read("profile-"+c.name, &previous); err == nil && !*replace {
 			return errors.New("this name is already paired; use resume, --name <another-name>, or --replace")
@@ -287,6 +308,14 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 		api, err := authorized(s, f.Arg(0))
 		if err != nil {
 			return err
+		}
+		if err := a.ensureNetwork(ctx); err != nil {
+			return err
+		}
+		if *background && !netsetup.Elevated() {
+			if err := service.UserCheck(ctx); err != nil {
+				return fmt.Errorf("background service is unavailable: %w; use --foreground for a terminal connection", err)
+			}
 		}
 		prefix, err := netip.ParsePrefix(*network)
 		if err != nil {
@@ -312,20 +341,29 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 		fmt.Fprintf(a.out, "Paired · local %s · peer %s\n", p.LocalIP, p.PeerIP)
 	}
 	*iface = defaultInterface(*iface, c.name)
+	if resume {
+		if err := a.ensureNetwork(ctx); err != nil {
+			return err
+		}
+		if *background && !netsetup.Elevated() {
+			if err := service.UserCheck(ctx); err != nil {
+				return fmt.Errorf("background service is unavailable: %w; use --foreground for a terminal connection", err)
+			}
+		}
+	}
 	if *background {
 		p.Interface, p.MTU, p.STUNURL, p.RelayOnly = *iface, *mtu, *stun, *relayOnly
 		if err := s.Write("profile-"+c.name, p); err != nil {
 			return err
 		}
-		exe, err := os.Executable()
+		exe, err := currentExecutable()
 		if err != nil {
 			return err
 		}
-		if err := service.Install(ctx, service.Config{Executable: exe, StateDir: s.Dir, Name: c.name}); err != nil {
+		if err := installClient(ctx, service.Config{Executable: exe, StateDir: s.Dir, Name: c.name}); err != nil {
 			return err
 		}
-		fmt.Fprintln(a.out, "Background service started.")
-		return nil
+		return a.waitBackground(ctx, s, c.name)
 	}
 	api, err := authorized(s, p.Server)
 	if err != nil {
@@ -358,7 +396,16 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 }
 
 func defaultInterface(requested, name string) string {
-	if requested != "" || name == "default" || runtime.GOOS == "darwin" {
+	if requested != "" || runtime.GOOS == "darwin" {
+		return requested
+	}
+	if !netsetup.Elevated() {
+		if identity, err := netsetup.CurrentIdentity(); err == nil {
+			digest := sha256.Sum256([]byte(identity + "\x00" + name))
+			return fmt.Sprintf("wc%x", digest[:6])
+		}
+	}
+	if name == "default" {
 		return requested
 	}
 	// Give named connections independent interfaces while staying within
@@ -388,6 +435,8 @@ func (a app) status(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	watch := f.Bool("watch", false, "refresh connection status once per second")
+	asJSON := f.Bool("json", false, "print machine-readable status (JSON lines when watching)")
 	if err := parse(f, args); err != nil {
 		return err
 	}
@@ -398,15 +447,41 @@ func (a app) status(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var st client.Status
-	if err := localctl.Status(ctx, s.Dir, c.name, &st); err != nil {
-		return fmt.Errorf("connection is not running or is owned by another user: %w", err)
+	for {
+		var st client.Status
+		if err := localctl.Status(ctx, s.Dir, c.name, &st); err != nil {
+			return fmt.Errorf("connection is not running for this user; run wirectl connect resume: %w", err)
+		}
+		if *asJSON {
+			if err := json.NewEncoder(a.out).Encode(st); err != nil {
+				return err
+			}
+		} else {
+			printStatus(a.out, st)
+		}
+		if !*watch {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
 	}
-	fmt.Fprintf(a.out, "%s · %s ↔ %s\nSent %d bytes · received %d bytes\n", st.Mode, st.LocalIP, st.PeerIP, st.Sent, st.Received)
+}
+
+func printStatus(out io.Writer, st client.Status) {
+	fmt.Fprintf(out, "%s · %s ↔ %s\n", st.Mode, st.LocalIP, st.PeerIP)
+	if st.DirectRemote != "" {
+		fmt.Fprintf(out, "Direct UDP endpoint: %s\n", st.DirectRemote)
+	}
+	if !st.ModeSince.IsZero() {
+		fmt.Fprintf(out, "Path since %s (%s)\n", st.ModeSince.Format(time.RFC3339), st.ModeReason)
+	}
+	fmt.Fprintf(out, "Direct: sent %d bytes · received %d bytes\nRelay:  sent %d bytes · received %d bytes\n", st.DirectSent, st.DirectReceived, st.RelaySent, st.RelayReceived)
 	if !st.LastHandshake.IsZero() {
-		fmt.Fprintf(a.out, "Last handshake: %s\n", st.LastHandshake.Format(time.RFC3339))
+		fmt.Fprintf(out, "Last WireGuard handshake: %s\n", st.LastHandshake.Format(time.RFC3339))
 	}
-	return nil
 }
 
 func (a app) stop(ctx context.Context, args []string) error {
@@ -426,10 +501,7 @@ func (a app) stop(ctx context.Context, args []string) error {
 		return err
 	}
 	ipcErr := localctl.Stop(ctx, s.Dir, c.name)
-	serviceErr := service.Stop(ctx, c.name)
-	if *remove {
-		serviceErr = service.Uninstall(ctx, c.name)
-	}
+	serviceErr := stopClient(ctx, c.name, *remove)
 	if serviceErr != nil && !errors.Is(serviceErr, service.ErrNotInstalled) {
 		return serviceErr
 	}

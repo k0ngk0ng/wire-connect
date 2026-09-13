@@ -34,7 +34,7 @@ _wirectl_connect_candidates() {
     (( count )) || return 0
     current="${args[count-1]}"
     case "${args[0]}" in
-        login|resume|status|stop|doctor|serve|completion|help|version)
+        login|resume|status|stop|doctor|serve|completion|setup|update|help|version)
             command="${args[0]}"; start=1 ;;
     esac
     # A command is selected only in the first position, as in the actual CLI.
@@ -52,7 +52,7 @@ _wirectl_connect_candidates() {
         fi
         [[ "$token" == '--' ]] && { ended=1; break; }
         case "$token" in
-            --state-dir|--name|--pin|--network|--interface|--mtu|--stun|--code|--domain|--listen|--stun-listen|--cert|--key|--enrollment-token-file|--max-relay-connections|--relay-bytes-per-second)
+            --state-dir|--name|--pin|--network|--interface|--mtu|--stun|--code|--domain|--listen|--stun-listen|--cert|--key|--enrollment-token-file|--max-relay-connections|--relay-bytes-per-second|--archive|--checksums|--manifest|--version)
                 pending="$token" ;;
         esac
     done
@@ -69,21 +69,24 @@ _wirectl_connect_candidates() {
         case "$pending" in
             --state-dir) _wc_kind=directory ;;
             --cert|--key|--enrollment-token-file) [[ "$command" == serve ]] && _wc_kind='file' ;;
+            --archive|--checksums|--manifest) [[ "$command" == update ]] && _wc_kind='file' ;;
         esac
         return 0
     fi
     case "$command" in
-        connect|resume) options="$common --background --network --interface --mtu --stun --relay-only --verbose --code --replace" ;;
+        connect|resume) options="$common --background --foreground --network --interface --mtu --stun --relay-only --verbose --code --replace" ;;
         login) options="$common --pin" ;;
         stop) options="$common --uninstall" ;;
-        status|doctor) options="$common" ;;
+        status) options="$common --watch --json" ;;
+        doctor) options="$common" ;;
+        update) options='--version --archive --checksums --manifest --state-dir --help' ;;
         serve) options="$common --domain --http --listen --stun-listen --cert --key --enrollment-token-file --init --max-relay-connections --relay-bytes-per-second" ;;
         completion) options='bash zsh' ;;
     esac
     if [[ "$current" == -* ]]; then
         [[ "$command" == completion ]] && options=''
     elif (( count == 1 )); then
-        options='login resume status stop doctor serve completion help version'
+        options='login resume status stop doctor serve completion setup update help version'
     elif [[ "$command" != completion || "$count" != 2 ]]; then
         options=''
     fi

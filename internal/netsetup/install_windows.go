@@ -121,7 +121,7 @@ func installPlatform(ctx context.Context, cfg normalizedConfig) error {
 	if err := service.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
 		return fmt.Errorf("wire-connect: configure network helper failure recovery: %w", err)
 	}
-	if err := setWindowsHelperServiceACL(serviceName); err != nil {
+	if err := setWindowsHelperServiceACL(serviceName, cfg.Identity); err != nil {
 		return fmt.Errorf("wire-connect: protect network helper service: %w", err)
 	}
 	if err := service.Start(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_ALREADY_RUNNING) {
@@ -153,8 +153,12 @@ func windowsHelperRecoveryActions() []mgr.RecoveryAction {
 	}
 }
 
-func setWindowsHelperServiceACL(name string) error {
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)")
+func setWindowsHelperServiceACL(name, identity string) error {
+	sddl, err := windowsHelperServiceSDDL(identity)
+	if err != nil {
+		return err
+	}
+	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return err
 	}
@@ -165,6 +169,21 @@ func setWindowsHelperServiceACL(name string) error {
 	return windows.SetNamedSecurityInfo(name, windows.SE_SERVICE,
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
 		nil, nil, dacl, nil)
+}
+
+func windowsHelperServiceSDDL(identity string) (string, error) {
+	// Identity is normalized before installPlatform is reached, but parse it
+	// again here because it is interpolated into an SDDL string. This keeps a
+	// future caller from turning the service ACL into an injection point.
+	sid, err := windows.StringToSid(identity)
+	if err != nil {
+		return "", fmt.Errorf("wire-connect: parse helper identity for service ACL: %w", err)
+	}
+	canonical := sid.String()
+	if canonical == "" || canonical != identity {
+		return "", errors.New("wire-connect: helper identity for service ACL is not canonical")
+	}
+	return "D:P(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;LC;;;" + canonical + ")", nil
 }
 
 func stopPlatform(ctx context.Context, identity string) error {
@@ -247,17 +266,57 @@ func uninstallPlatform(ctx context.Context, identity string) error {
 	return removeWindowsInstalledDir(dir)
 }
 
+// The service manager helpers used by Install/Stop/Uninstall intentionally
+// request administrative rights. Status is a read-only operation and must be
+// usable by the enrolled ordinary user, so it opens each object with the
+// narrowest access required for QueryServiceStatusEx.
+var (
+	openWindowsStatusManagerFn = func(access uint32) (windows.Handle, error) {
+		return windows.OpenSCManager(nil, nil, access)
+	}
+	openWindowsStatusServiceFn = func(manager windows.Handle, name *uint16, access uint32) (windows.Handle, error) {
+		return windows.OpenService(manager, name, access)
+	}
+	queryWindowsStatusServiceFn = func(service *mgr.Service) (svc.Status, error) {
+		return service.Query()
+	}
+)
+
+func connectWindowsStatusManager() (*mgr.Mgr, error) {
+	h, err := openWindowsStatusManagerFn(windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return nil, err
+	}
+	return &mgr.Mgr{Handle: h}, nil
+}
+
+func openWindowsStatusService(manager *mgr.Mgr, name string) (*mgr.Service, error) {
+	serviceName, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, err
+	}
+	h, err := openWindowsStatusServiceFn(manager.Handle, serviceName, windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		return nil, err
+	}
+	return &mgr.Service{Name: name, Handle: h}, nil
+}
+
+func queryWindowsStatusService(service *mgr.Service) (svc.Status, error) {
+	return queryWindowsStatusServiceFn(service)
+}
+
 func statusPlatform(ctx context.Context, identity string) (string, error) {
 	name := HelperName(identity)
 	if name == "" {
 		return "", errors.New("wire-connect: could not derive helper name")
 	}
-	manager, err := mgr.Connect()
+	manager, err := connectWindowsStatusManager()
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: connect to Windows Service Control Manager: %w", err)
 	}
 	defer manager.Disconnect()
-	service, err := manager.OpenService(windowsNativeHelperServiceName(name))
+	service, err := openWindowsStatusService(manager, windowsNativeHelperServiceName(name))
 	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		return "", fmt.Errorf("%w: %q", ErrNotInstalled, identity)
 	}
@@ -265,7 +324,7 @@ func statusPlatform(ctx context.Context, identity string) (string, error) {
 		return "", fmt.Errorf("wire-connect: open network helper service: %w", err)
 	}
 	defer service.Close()
-	state, err := service.Query()
+	state, err := queryWindowsStatusService(service)
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: query network helper service: %w", err)
 	}
