@@ -311,14 +311,16 @@ func windowsUserTaskStateScript(task string) string {
 	separator := strings.LastIndexByte(task, '\\')
 	path, name := `\`, task
 	if separator >= 0 {
-		path += task[:separator+1]
+		// ITaskFolder::GetFolder accepts the root path as "\\", but rejects a
+		// non-root folder path with a trailing separator (0x8007007B).
+		path += strings.TrimSuffix(task[:separator+1], `\`)
 		name = task[separator+1:]
 	}
 	// Task names are normalized before reaching this function. Keep the
 	// explicit quote escaping as a second invariant if this helper is reused.
 	path = strings.ReplaceAll(path, `'`, `''`)
 	name = strings.ReplaceAll(name, `'`, `''`)
-	return "$ErrorActionPreference='Stop';try{$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$f=$s.GetFolder('" + path + "');$t=$f.GetTask('" + name + "');[Console]::Out.Write([int]$t.State)}catch{$h=$_.Exception.GetBaseException().HResult;if($h -eq -2147216625 -or $h -eq -2147216618 -or $h -eq -2147024894){[Console]::Out.Write('-1')}else{throw}}"
+	return "$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';try{$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$f=$s.GetFolder('" + path + "');$t=$f.GetTask('" + name + "');[Console]::Out.Write([int]$t.State)}catch{$h=$_.Exception.GetBaseException().HResult;if($h -eq -2147024894 -or $h -eq -2147024893){[Console]::Out.Write('-1')}else{throw}}"
 }
 
 func base64UTF16(value string) string {

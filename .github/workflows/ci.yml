@@ -216,7 +216,7 @@ jobs:
             '^(TestOpenRealTUNLifecycle|TestRealNetworkHelperLifecycle)$' \
             '^TestRealServiceLifecycle$'
       - name: Run real TUN lifecycle (Windows administrator)
-        if: matrix.name == 'windows'
+        if: ${{ !cancelled() && matrix.name == 'windows' }}
         shell: pwsh
         run: |
           $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

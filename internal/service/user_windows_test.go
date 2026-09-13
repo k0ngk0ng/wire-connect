@@ -83,10 +83,12 @@ func TestWindowsUserTaskXMLIsInteractivePersistentAndShellSafe(t *testing.T) {
 func TestWindowsUserTaskStateScriptEscapesTaskPathAndName(t *testing.T) {
 	script := windowsUserTaskStateScript(`wire-connect\user-ab'cd\of'fice`)
 	for _, want := range []string{
-		"$s.GetFolder('\\wire-connect\\user-ab''cd\\')",
+		"$s.GetFolder('\\wire-connect\\user-ab''cd')",
 		"$f.GetTask('of''fice')",
 		"GetBaseException().HResult",
-		"-2147216625",
+		"-2147024894",
+		"-2147024893",
+		"$ProgressPreference='SilentlyContinue'",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("state script lacks %q: %s", want, script)
