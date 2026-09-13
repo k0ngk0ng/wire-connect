@@ -26,7 +26,7 @@ func TestInterspersedFlags(t *testing.T) {
 }
 
 func TestHelpAndVersionDoNotNeedState(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"version"}} {
+	for _, args := range [][]string{{"--help"}, {"version"}, {"completion", "bash"}, {"completion", "zsh"}} {
 		var out, errOut bytes.Buffer
 		if err := Run(context.Background(), args, "1.2.3", bytes.NewReader(nil), &out, &errOut); err != nil {
 			t.Fatal(err)

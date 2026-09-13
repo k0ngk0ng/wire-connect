@@ -38,6 +38,20 @@ Windows 的 `wirectl` 需要支持 `.exe` 插件分发；如果旧版主程序�
 
 创建虚拟网卡和配置路由需要管理员权限。Linux/macOS 如果以管理员身份运行客户端，请在同一个管理员环境中运行登录、连接和恢复命令；使用 root 的默认状态目录时例如 `sudo -H wirectl connect ...`（直接运行插件则使用 `sudo -H wirectl-connect ...`）。root 创建的状态目录需要继续由 root 使用；也可以让同一个用户为每次命令显式指定同一个私有 `--state-dir`。Windows 使用管理员 PowerShell，下面命令中的 `sudo -H` 前缀应去掉后直接运行。
 
+## Shell 补全
+
+生成并在当前 shell 加载补全：
+
+```sh
+# zsh（尚未初始化补全系统时先执行 autoload -Uz compinit; compinit）
+source <(wirectl connect completion zsh)
+
+# bash
+source <(wirectl connect completion bash)
+```
+
+需要持久生效时，将对应的 `source` 行加入 `~/.zshrc` 或 `~/.bashrc`；macOS 的登录 bash 还需由 `~/.bash_profile` 加载 `~/.bashrc`。如果也启用了 `wirectl download` 补全，先加载 download，再加载 connect。connect 补全同时支持 `wirectl connect` 和独立的 `wirectl-connect`，保留已加载的 download 补全，并支持子命令、选项以及文件和目录参数。
+
 ## 第一次使用
 
 先在 Linux 公网服务器部署服务，取得初始化时生成的服务器授权令牌。每台客户端只需授权一次，令牌通过交互输入，不写在命令行中：

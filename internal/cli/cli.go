@@ -41,6 +41,7 @@ Usage:
   wirectl connect doctor [server]              Check network prerequisites
   wirectl connect serve --domain <hostname>    Run the Linux public server
   wirectl connect serve --http                Run a local HTTP backend
+  wirectl connect completion bash|zsh         Print shell completion
 
 Options:
   --state-dir <path>   Private credentials and profiles directory
@@ -75,6 +76,8 @@ func Run(ctx context.Context, args []string, version string, in io.Reader, out, 
 	case "version", "--version":
 		fmt.Fprintln(out, version)
 		return nil
+	case "completion":
+		return a.completion(args[1:])
 	case "login":
 		err = a.login(ctx, args[1:])
 	case "serve":
