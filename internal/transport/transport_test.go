@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -260,6 +262,61 @@ func TestICELocalOfferCancellationAndBounds(t *testing.T) {
 	}
 	if _, err := i.LocalOffer(context.Background()); !errors.Is(err, ErrICEClosed) {
 		t.Fatalf("closed LocalOffer error = %v, want ErrICEClosed", err)
+	}
+}
+
+func TestICEExcludedIPsFilterLocalAndRemoteCandidates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	virtualLocal := netip.MustParseAddr("100.64.0.1")
+	virtualPeer := netip.MustParseAddr("100.64.0.2")
+	loopbackV4 := netip.MustParseAddr("127.0.0.1")
+	loopbackV6 := netip.MustParseAddr("::1")
+	excluded := []netip.Addr{virtualLocal, virtualPeer, loopbackV4, loopbackV6}
+
+	local, err := NewICE(ctx, "", true, excluded...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	offer, err := local.LocalOffer(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range offer.Candidates {
+		candidate, err := pionice.UnmarshalCandidate(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr, err := netip.ParseAddr(candidate.Address())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, blocked := range excluded {
+			if addr.Unmap() == blocked.Unmap() {
+				t.Fatalf("excluded local address %s appeared in candidate %q", blocked, raw)
+			}
+		}
+	}
+
+	remoteCandidate, err := pionice.NewCandidateHost(&pionice.CandidateHostConfig{
+		Network:   "udp4",
+		Address:   virtualPeer.String(),
+		Port:      40000,
+		Component: pionice.ComponentRTP,
+		Priority:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := Offer{Ufrag: "remote-ufrag", Password: "remote-password", Candidates: []string{remoteCandidate.Marshal()}}
+	remoteFiltered, err := NewICE(ctx, "", true, virtualPeer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer remoteFiltered.Close()
+	if _, err := remoteFiltered.Connect(ctx, remote); err == nil || !strings.Contains(err.Error(), "no usable candidates after IP filtering") {
+		t.Fatalf("Connect excluded remote candidate error = %v", err)
 	}
 }
 

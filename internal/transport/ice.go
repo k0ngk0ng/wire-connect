@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,10 @@ type ICE struct {
 	cancel context.CancelFunc
 	agent  *pionice.Agent
 	host   bool
+	// excludedIPs is immutable after construction. It protects both local
+	// candidate gathering and remote candidate admission from selecting the
+	// virtual tunnel addresses as outer ICE endpoints.
+	excludedIPs map[netip.Addr]struct{}
 
 	mu             sync.Mutex
 	closed         bool
@@ -73,15 +78,22 @@ type ICE struct {
 	closeErr   error
 }
 
-// NewICE constructs an agent and returns immediately.  stunURL may be empty
-// for host-candidate-only operation or a stun:// / stuns:// URI.  mDNS and TCP
+// NewICE constructs an agent and returns immediately. stunURL may be empty
+// for host-candidate-only operation or a stun:// / stuns:// URI. mDNS and TCP
 // candidates are disabled because this transport only carries UDP datagrams;
 // loopback is retained to make local and deterministic tests possible.
-func NewICE(ctx context.Context, stunURL string, host bool) (*ICE, error) {
-	return newICE(ctx, stunURL, host, defaultICETiming)
+//
+// excludedIPs optionally lists addresses that must never be used as local or
+// remote ICE candidates. Callers that create a virtual interface should pass
+// both virtual tunnel addresses here; doing so prevents ICE from selecting a
+// route through the tunnel itself and recursively carrying its own outer
+// traffic. The arguments are normalized with Addr.Unmap and are also applied
+// to peer-reflexive candidates discovered during connectivity checks.
+func NewICE(ctx context.Context, stunURL string, host bool, excludedIPs ...netip.Addr) (*ICE, error) {
+	return newICE(ctx, stunURL, host, defaultICETiming, excludedIPs...)
 }
 
-func newICE(ctx context.Context, stunURL string, host bool, timing iceTiming) (*ICE, error) {
+func newICE(ctx context.Context, stunURL string, host bool, timing iceTiming, excludedIPs ...netip.Addr) (*ICE, error) {
 	if ctx == nil {
 		return nil, errors.New("wire-connect: nil context")
 	}
@@ -89,6 +101,10 @@ func newICE(ctx context.Context, stunURL string, host bool, timing iceTiming) (*
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
+	}
+	excluded, err := normalizeExcludedIPs(excludedIPs)
+	if err != nil {
+		return nil, err
 	}
 
 	var urls []*stun.URI
@@ -103,7 +119,7 @@ func newICE(ctx context.Context, stunURL string, host bool, timing iceTiming) (*
 		urls = []*stun.URI{u}
 	}
 
-	agent, err := pionice.NewAgentWithOptions(
+	options := []pionice.AgentOption{
 		pionice.WithUrls(urls),
 		pionice.WithNetworkTypes([]pionice.NetworkType{
 			pionice.NetworkTypeUDP4,
@@ -120,20 +136,29 @@ func newICE(ctx context.Context, stunURL string, host bool, timing iceTiming) (*
 		pionice.WithDisconnectedTimeout(timing.disconnected),
 		pionice.WithFailedTimeout(timing.failed),
 		pionice.WithSTUNGatherTimeout(timing.stunGather),
-	)
+	}
+	if len(excluded) > 0 {
+		// Pion applies IPFilter while gathering host candidates and
+		// RemoteIPFilter both to signaled candidates and to peer-reflexive
+		// candidates created from authenticated STUN requests.
+		keep := func(ip net.IP) bool { return !excludedIP(excluded, ip) }
+		options = append(options, pionice.WithIPFilter(keep), pionice.WithRemoteIPFilter(keep))
+	}
+	agent, err := pionice.NewAgentWithOptions(options...)
 	if err != nil {
 		return nil, fmt.Errorf("wire-connect: create ICE agent: %w", err)
 	}
 
 	iceCtx, cancel := context.WithCancel(ctx)
 	i := &ICE{
-		ctx:        iceCtx,
-		cancel:     cancel,
-		agent:      agent,
-		host:       host,
-		gatherDone: make(chan struct{}),
-		lost:       make(chan struct{}),
-		closeDone:  make(chan struct{}),
+		ctx:         iceCtx,
+		cancel:      cancel,
+		agent:       agent,
+		host:        host,
+		excludedIPs: excluded,
+		gatherDone:  make(chan struct{}),
+		lost:        make(chan struct{}),
+		closeDone:   make(chan struct{}),
 	}
 	if err := agent.OnCandidate(func(candidate pionice.Candidate) {
 		// Pion invokes the callback with nil when gathering is complete.  The
@@ -249,7 +274,7 @@ func (i *ICE) LocalOffer(ctx context.Context) (Offer, error) {
 	offer := Offer{Ufrag: ufrag, Password: password, Candidates: make([]string, 0, len(candidates))}
 	totalCandidateBytes := 0
 	for _, candidate := range candidates {
-		if candidate == nil || !allowedCandidate(candidate) {
+		if candidate == nil || !allowedCandidate(candidate) || i.isExcludedCandidate(candidate) {
 			continue
 		}
 		raw := candidate.Marshal()
@@ -299,6 +324,9 @@ func (i *ICE) Connect(ctx context.Context, remote Offer) (net.Conn, error) {
 		if !allowedCandidate(candidate) {
 			return nil, errors.New("wire-connect: remote offer contains a non-UDP candidate")
 		}
+		if i.isExcludedCandidate(candidate) {
+			continue
+		}
 		duplicate := false
 		for _, existing := range parsedCandidates {
 			if candidate.Equal(existing) {
@@ -309,6 +337,9 @@ func (i *ICE) Connect(ctx context.Context, remote Offer) (net.Conn, error) {
 		if !duplicate {
 			parsedCandidates = append(parsedCandidates, candidate)
 		}
+	}
+	if len(parsedCandidates) == 0 {
+		return nil, errors.New("wire-connect: remote ICE offer has no usable candidates after IP filtering")
 	}
 
 	i.mu.Lock()
@@ -427,6 +458,44 @@ func validateOffer(o Offer) error {
 	return nil
 }
 
+func normalizeExcludedIPs(raw []netip.Addr) (map[netip.Addr]struct{}, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	excluded := make(map[netip.Addr]struct{}, len(raw))
+	for _, ip := range raw {
+		if !ip.IsValid() {
+			return nil, errors.New("wire-connect: excluded IP is invalid")
+		}
+		excluded[ip.Unmap()] = struct{}{}
+	}
+	return excluded, nil
+}
+
+func excludedIP(excluded map[netip.Addr]struct{}, ip net.IP) bool {
+	if len(excluded) == 0 {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	_, ok = excluded[addr.Unmap()]
+	return ok
+}
+
+func (i *ICE) isExcludedCandidate(candidate pionice.Candidate) bool {
+	if i == nil || len(i.excludedIPs) == 0 || candidate == nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(candidate.Address())
+	if err != nil {
+		return false
+	}
+	_, ok := i.excludedIPs[addr.Unmap()]
+	return ok
+}
+
 func validateCredentials(ufrag, password string) error {
 	if ufrag == "" || password == "" {
 		return errors.New("credentials must not be empty")
@@ -447,6 +516,9 @@ func validateCredentials(ufrag, password string) error {
 
 func allowedCandidate(candidate pionice.Candidate) bool {
 	if candidate == nil {
+		return false
+	}
+	if _, err := netip.ParseAddr(candidate.Address()); err != nil {
 		return false
 	}
 	if candidate.Component() != pionice.ComponentRTP {

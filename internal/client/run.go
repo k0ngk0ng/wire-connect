@@ -220,6 +220,12 @@ func (a *activeICE) close() {
 func (c *Client) maintainDirect(ctx context.Context, p config.Profile, bind *transport.Bind, opts RunOptions) {
 	active := &activeICE{}
 	defer active.close()
+	// The outer transport must never route through the virtual link it carries.
+	// ICE gathering starts after TUN setup, so exclude both virtual endpoints
+	// from local candidates and remote connectivity checks on every attempt.
+	localIP, _ := netip.ParseAddr(p.LocalIP)
+	peerIP, _ := netip.ParseAddr(p.PeerIP)
+	excludedIPs := []netip.Addr{localIP, peerIP}
 	stunURL := opts.STUNURL
 	if stunURL == "" {
 		u, _ := url.Parse(c.Server)
@@ -234,7 +240,7 @@ func (c *Client) maintainDirect(ctx context.Context, p config.Profile, bind *tra
 				var ch *channel
 				ch, err = newChannel(ctx, s, p.Secret, p.Host, c.Server+"/pairs/"+p.PairID)
 				if err == nil {
-					err = runICENegotiation(ctx, ch, p.Host, stunURL, opts.RelayOnly, bind, active)
+					err = runICENegotiation(ctx, ch, p.Host, stunURL, opts.RelayOnly, bind, active, excludedIPs...)
 				}
 			}
 			s.close()
@@ -252,7 +258,7 @@ func (c *Client) maintainDirect(ctx context.Context, p config.Profile, bind *tra
 	}
 }
 
-func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL string, relayOnly bool, bind *transport.Bind, active *activeICE) error {
+func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL string, relayOnly bool, bind *transport.Bind, active *activeICE, excludedIPs ...netip.Addr) error {
 	for ctx.Err() == nil {
 		if host {
 			for bind.Direct() {
@@ -272,7 +278,7 @@ func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL stri
 				<-ctx.Done()
 				return ctx.Err()
 			}
-			agent, err := transport.NewICE(ctx, stunURL, true)
+			agent, err := transport.NewICE(ctx, stunURL, true, excludedIPs...)
 			if err != nil {
 				return err
 			}
@@ -329,7 +335,7 @@ func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL stri
 				}
 				continue
 			}
-			agent, err := transport.NewICE(ctx, stunURL, false)
+			agent, err := transport.NewICE(ctx, stunURL, false, excludedIPs...)
 			if err != nil {
 				return err
 			}

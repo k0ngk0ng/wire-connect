@@ -88,6 +88,20 @@ jobs:
         run: |
           set -euo pipefail
           go test -tags integration -timeout 2m -c -o ".cache/network/platform.test${TEST_EXTENSION}" ./internal/platform
+      - name: Build service lifecycle test binary
+        shell: bash
+        env:
+          TEST_EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          go test -tags integration -timeout 2m -c -o ".cache/network/service.test${TEST_EXTENSION}" ./internal/service
+      - name: Build service lifecycle helper
+        shell: bash
+        env:
+          TEST_EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          go build -trimpath -buildvcs=false -o ".cache/network/wire-connect-service-testutil${TEST_EXTENSION}" ./cmd/wire-connect-service-testutil
       - name: Fetch adjacent Wintun runtime
         if: matrix.name == 'windows'
         shell: bash
@@ -99,12 +113,37 @@ jobs:
         shell: pwsh
         run: |
           & "$env:GITHUB_WORKSPACE/scripts/verify-wintun.ps1" -Path "$env:GITHUB_WORKSPACE/.cache/network/wintun.dll"
-      - name: Run real TUN lifecycle (Unix administrator)
+      - name: Run real TUN and service lifecycle (Unix administrator)
         if: matrix.name != 'windows'
         shell: bash
         run: |
           set -euo pipefail
-          sudo env WIRE_CONNECT_NETWORK_TEST=1 "$GITHUB_WORKSPACE/.cache/network/platform.test" -test.run '^TestOpenRealTUNLifecycle$' -test.timeout=2m -test.v
+          case '${{ matrix.name }}' in
+            linux) service_state_root='/var/lib/wire-connect-integration' ;;
+            macos) service_state_root='/Library/wire-connect-integration' ;;
+            *) echo "unsupported Unix CI matrix entry: ${{ matrix.name }}" >&2; exit 2 ;;
+          esac
+          sudo env \
+            WIRE_CONNECT_NETWORK_TEST=1 \
+            WIRE_CONNECT_SERVICE_INTEGRATION=1 \
+            WIRE_CONNECT_SERVICE_HELPER="$GITHUB_WORKSPACE/.cache/network/wire-connect-service-testutil" \
+            WIRE_CONNECT_SERVICE_STATE_ROOT="$service_state_root" \
+            /bin/sh -c '
+              set -eu
+              state_root="$1"
+              platform_test="$2"
+              service_test="$3"
+              mkdir -p "$state_root"
+              chmod 700 "$state_root"
+              trap '\''rm -rf "$state_root"'\'' EXIT
+              "$platform_test" -test.run "$4" -test.timeout=2m -test.v
+              "$service_test" -test.run "$5" -test.timeout=2m -test.v
+            ' sh \
+            "$service_state_root" \
+            "$GITHUB_WORKSPACE/.cache/network/platform.test" \
+            "$GITHUB_WORKSPACE/.cache/network/service.test" \
+            '^TestOpenRealTUNLifecycle$' \
+            '^TestRealServiceLifecycle$'
       - name: Run real TUN lifecycle (Windows administrator)
         if: matrix.name == 'windows'
         shell: pwsh
@@ -119,6 +158,29 @@ jobs:
           & "$env:GITHUB_WORKSPACE/.cache/network/platform.test.exe" @testArgs
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
+          }
+          $env:WIRE_CONNECT_SERVICE_INTEGRATION = '1'
+          $env:WIRE_CONNECT_SERVICE_HELPER = "$env:GITHUB_WORKSPACE/.cache/network/wire-connect-service-testutil.exe"
+          $env:WIRE_CONNECT_SERVICE_STATE_ROOT = "$env:GITHUB_WORKSPACE/.cache/svc"
+          $serviceTestPath = "$env:GITHUB_WORKSPACE/.cache/network/service.test.exe"
+          if (-not (Test-Path -LiteralPath $serviceTestPath -PathType Leaf)) {
+            throw "service lifecycle test binary is missing: $serviceTestPath"
+          }
+          if (-not (Test-Path -LiteralPath $env:WIRE_CONNECT_SERVICE_HELPER -PathType Leaf)) {
+            throw "service lifecycle helper is missing: $env:WIRE_CONNECT_SERVICE_HELPER"
+          }
+          $serviceStateRoot = $env:WIRE_CONNECT_SERVICE_STATE_ROOT
+          New-Item -ItemType Directory -Force -Path $serviceStateRoot | Out-Null
+          $serviceArgs = @('-test.run=^TestRealServiceLifecycle$', '-test.timeout=2m', '-test.v')
+          $serviceExitCode = 0
+          try {
+            & $serviceTestPath @serviceArgs
+            $serviceExitCode = $LASTEXITCODE
+          } finally {
+            Remove-Item -LiteralPath $serviceStateRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          if ($serviceExitCode -ne 0) {
+            exit $serviceExitCode
           }
 
   nat:

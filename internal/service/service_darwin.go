@@ -75,6 +75,16 @@ func Install(ctx context.Context, cfg Config) error {
 	}
 
 	target := darwinTarget(normalized.Name)
+	// Clear a persistent disabled override before loading a replacement job.
+	// launchctl may reject bootstrap for a previously disabled label. On a
+	// first install the label is not loaded yet, so defer that harmless
+	// "not loaded" result and retry enable after bootstrap.
+	enabledBeforeBootstrap := false
+	if err := runCommand(ctx, platformCommands, manager, "enable", target); err == nil {
+		enabledBeforeBootstrap = true
+	} else if !isLaunchctlNotLoaded(err) {
+		return fmt.Errorf("wire-connect: enable LaunchDaemon %q: %w", normalized.Name, err)
+	}
 	if err := runCommand(ctx, platformCommands, manager, "bootstrap", "system", darwinPlistPath(normalized.Name)); err != nil {
 		// A previous installation may still be bootstrapped.  Unload only after
 		// bootstrap reports an error, then retry with the new plist.
@@ -85,8 +95,10 @@ func Install(ctx context.Context, cfg Config) error {
 			return fmt.Errorf("wire-connect: bootstrap LaunchDaemon %q after replacement: %w", normalized.Name, retryErr)
 		}
 	}
-	if err := runCommand(ctx, platformCommands, manager, "enable", target); err != nil {
-		return fmt.Errorf("wire-connect: enable LaunchDaemon %q: %w", normalized.Name, err)
+	if !enabledBeforeBootstrap {
+		if err := runCommand(ctx, platformCommands, manager, "enable", target); err != nil {
+			return fmt.Errorf("wire-connect: enable LaunchDaemon %q: %w", normalized.Name, err)
+		}
 	}
 	if err := runCommand(ctx, platformCommands, manager, "kickstart", "-k", target); err != nil {
 		return fmt.Errorf("wire-connect: start LaunchDaemon %q: %w", normalized.Name, err)
@@ -123,17 +135,23 @@ func Stop(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("wire-connect: inspect LaunchDaemon %q: %w", normalizedName, err)
 	}
-	if !loaded {
-		return fmt.Errorf("%w: %q", ErrNotInstalled, normalizedName)
-	}
 	if err := runCommand(ctx, platformCommands, manager, "disable", target); err != nil {
 		if isLaunchctlNotLoaded(err) {
-			return fmt.Errorf("%w: %q", ErrNotInstalled, normalizedName)
+			// The plist is still installed, so a missing launchd job is an
+			// already-stopped service rather than an absent installation. Keep
+			// the idempotent Stop contract while retaining the disabled state.
+		} else {
+			return fmt.Errorf("wire-connect: disable LaunchDaemon %q: %w", normalizedName, err)
 		}
-		return fmt.Errorf("wire-connect: disable LaunchDaemon %q: %w", normalizedName, err)
+	}
+	if !loaded {
+		return nil
 	}
 	if err := runCommand(ctx, platformCommands, manager, "kill", "SIGTERM", target); err != nil && !isLaunchctlNotLoaded(err) {
 		return fmt.Errorf("wire-connect: stop LaunchDaemon %q: %w", normalizedName, err)
+	}
+	if err := runCommand(ctx, platformCommands, manager, "bootout", target); err != nil && !isLaunchctlNotLoaded(err) {
+		return fmt.Errorf("wire-connect: unload LaunchDaemon %q: %w", normalizedName, err)
 	}
 	return nil
 }
@@ -183,7 +201,7 @@ func Uninstall(ctx context.Context, name string) error {
 		}
 	}
 	// Clear launchd's persistent disabled override before deleting the record.
-	if err := runCommand(ctx, platformCommands, manager, "enable", target); err != nil {
+	if err := runCommand(ctx, platformCommands, manager, "enable", target); err != nil && !isLaunchctlNotLoaded(err) {
 		return fmt.Errorf("wire-connect: clear LaunchDaemon disabled state %q: %w", normalizedName, err)
 	}
 	if platformFiles == nil {
