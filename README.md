@@ -254,6 +254,8 @@ wirectl connect update --version 1.2.0
 wirectl connect update --state-dir /path/to/wire-connect
 ```
 
+公网服务端如果由自定义 systemd unit 运行 `serve`，更新执行文件后还需要重启该 unit，再检查 HTTPS `/healthz` 和 UDP STUN；客户端的 `update` 不会自动重启任意自定义服务。
+
 若仍在使用没有 `update` 子命令的 1.1.x，先手动下载并替换一次新版 `wirectl-connect`，再执行 `wirectl connect update` 管理后续升级。若刷新失败，先执行 `wirectl connect setup`，再执行 `wirectl connect resume`。
 
 在隔离网络中可以使用离线包，但必须同时提供与目标平台和版本匹配的 archive 与 `SHA256SUMS`：
