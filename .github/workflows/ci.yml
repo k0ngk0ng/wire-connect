@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version passed to the cross-build job
+        required: false
+        type: string
+        default: snapshot
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: native-${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+          - name: macos
+            os: macos-14
+          - name: windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOTMPDIR: ${{ github.workspace }}/.cache/tmp
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+      TEMP: ${{ github.workspace }}/.cache/tmp
+      TMP: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
+      - run: go test -race ./...
+      - run: go vet ./...
+
+  network-tun:
+    name: tun-${{ matrix.name }}
+    needs: native
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            extension: ''
+          - name: macos
+            os: macos-14
+            extension: ''
+          - name: windows
+            os: windows-latest
+            extension: .exe
+    runs-on: ${{ matrix.os }}
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOTMPDIR: ${{ github.workspace }}/.cache/tmp
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+      TEMP: ${{ github.workspace }}/.cache/tmp
+      TMP: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR" "$GITHUB_WORKSPACE/.cache/network"
+      - name: Build integration test binary
+        shell: bash
+        env:
+          TEST_EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          go test -tags integration -c -o ".cache/network/platform.test${TEST_EXTENSION}" ./internal/platform
+      - name: Fetch adjacent Wintun runtime
+        if: matrix.name == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/fetch-wintun.sh "$PWD/.cache/network"
+      - name: Verify Wintun Authenticode signature
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/scripts/verify-wintun.ps1" -Path "$env:GITHUB_WORKSPACE/.cache/network/wintun.dll"
+      - name: Run real TUN lifecycle (Unix administrator)
+        if: matrix.name != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env WIRE_CONNECT_NETWORK_TEST=1 "$GITHUB_WORKSPACE/.cache/network/platform.test" -test.run '^TestOpenRealTUNLifecycle$' -test.v
+      - name: Run real TUN lifecycle (Windows administrator)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'The Windows TUN lifecycle test requires an elevated administrator runner.'
+          }
+          $env:WIRE_CONNECT_NETWORK_TEST = '1'
+          & "$env:GITHUB_WORKSPACE/.cache/network/platform.test.exe" -test.run '^TestOpenRealTUNLifecycle$' -test.v
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+  govulncheck:
+    name: govulncheck
+    needs: native
+    runs-on: ubuntu-24.04
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOTMPDIR: ${{ github.workspace }}/.cache/tmp
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  crossbuild:
+    name: cross-build
+    needs: native
+    runs-on: ubuntu-24.04
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOTMPDIR: ${{ github.workspace }}/.cache/tmp
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Prepare repository-local Go paths
+        shell: bash
+        run: mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
+      - name: Build all release targets
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION:-snapshot}"
+          ./scripts/build-release.sh --version "$version"
+      - name: Upload cross-build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wire-connect-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7

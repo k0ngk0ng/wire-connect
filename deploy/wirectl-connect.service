@@ -1,0 +1,45 @@
+[Unit]
+Description=wire-connect rendezvous and hole-punching server
+Documentation=https://github.com/k0ngk0ng/wire-connect
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wire-connect
+Group=wire-connect
+ExecStart=/usr/local/bin/wirectl-connect serve --domain vpn.example.com --state-dir /var/lib/wire-connect
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+TimeoutStopSec=20s
+UMask=0077
+
+# The serve command uses TLS TCP :443 and STUN UDP :3478 by default.
+# CAP_NET_BIND_SERVICE is needed for the TLS listener while the process stays
+# unprivileged. Override ExecStart in a systemd drop-in for explicit
+# --cert/--key files; omitting them keeps ACME certificate management enabled.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+StateDirectory=wire-connect
+StateDirectoryMode=0700
+ConfigurationDirectory=wire-connect
+ConfigurationDirectoryMode=0700
+ReadWritePaths=/var/lib/wire-connect
+
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

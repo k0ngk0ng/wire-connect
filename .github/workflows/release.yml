@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  verify:
+    name: Verify release commit
+    uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ github.ref_name }}
+    permissions:
+      contents: read
+
+  publish:
+    name: Publish release
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+      GOMODCACHE: ${{ github.workspace }}/.cache/go-mod
+      GOTMPDIR: ${{ github.workspace }}/.cache/tmp
+      TMPDIR: ${{ github.workspace }}/.cache/tmp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Confirm the checked out commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Download verified build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wire-connect-${{ github.sha }}
+          path: dist
+      - name: Verify release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.cache/tmp"
+          notes_file="$(mktemp "$GITHUB_WORKSPACE/.cache/tmp/wire-connect-release-notes.XXXXXX")"
+          cleanup() { rm -f "$notes_file"; }
+          trap cleanup EXIT
+          cat > "$notes_file" <<EOF
+          wire-connect $TAG
+
+          This release was built by the verified CI workflow for the tagged commit.
+          SHA256SUMS is included with all archives and THIRD_PARTY_INVENTORY.txt.
+          GitHub artifact attestations are attached to the release subjects.
+
+          Verify provenance with:
+            gh attestation verify <asset> --repo $GITHUB_REPOSITORY
+
+          Apple and Windows code signing are not configured for this project; the
+          release does not claim platform code signatures.
+          EOF
+          gh release create "$TAG" dist/* --verify-tag --title "$TAG" --notes-file "$notes_file"
