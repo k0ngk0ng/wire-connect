@@ -87,7 +87,7 @@ if [[ ! -x "$TESTUTIL_BIN" ]]; then
 	exit 2
 fi
 
-for required in ip iptables curl timeout awk grep sed tail sleep mktemp openssl tr sysctl; do
+for required in ip iptables curl timeout awk grep sed tail sleep mktemp openssl tr sysctl head sha256sum; do
 	if ! command -v "$required" >/dev/null 2>&1; then
 		echo "required command is missing: $required" >&2
 		exit 2
@@ -385,6 +385,24 @@ test_inner_traffic() {
 	done
 	[[ "$udp_ok" == "1" ]] || fail "$label UDP traffic did not cross the encrypted virtual link"
 
+	# Verify a full TCP stream beyond the initial handshake, byte for byte.
+	local bulk="$RUN_ROOT/$label-bulk.bin" expected_hash actual_hash
+	if ! ns_exec "$ns_client" timeout 35s curl --silent --show-error --fail --max-time 30 "http://$peer:18080/bulk" -o "$bulk" 2>"$RUN_ROOT/$label-bulk.stderr"; then
+		fail "$label bulk TCP transfer failed"
+	fi
+	expected_hash="$(head -c 4194304 /dev/zero | sha256sum | awk '{print $1}')"
+	actual_hash="$(sha256sum "$bulk" | awk '{print $1}')"
+	[[ "$actual_hash" == "$expected_hash" ]] || fail "$label bulk TCP content mismatch"
+
+	# Check a near-MTU datagram and fragmented inner IPv4 UDP traffic.
+	local size payload
+	for size in 1372 8192; do
+		printf -v payload '%*s' "$size" ''
+		if ! ns_exec "$ns_client" timeout 5s "$TESTUTIL_BIN" udp-client --addr "$peer:18081" --payload "$payload" >"$RUN_ROOT/$label-udp-$size.stdout" 2>"$RUN_ROOT/$label-udp-$size.stderr"; then
+			fail "$label UDP payload of $size bytes failed"
+		fi
+	done
+
 	stop_process "$http_name"
 	stop_process "$udp_name"
 }
@@ -393,6 +411,12 @@ run_pair() {
 	local label="$1" code="$2" expected_mode="$3" state_a="$4" state_b="$5" network="$6"
 	STATUS_ENTRIES+=("$label|$NS_CLIENT_A|$state_a" "$label|$NS_CLIENT_B|$state_b")
 	start_process "$label-host" "$NS_CLIENT_A" "$RUN_ROOT/$label-host.stdout" "$RUN_ROOT/$label-host.stderr" "$CONNECT_BIN" "$SERVER_URL" --state-dir "$state_a" --name "$label" --code "$code" --network "$network" --interface "wc$label"
+	local deadline=$((SECONDS + 15))
+	until grep -q '^Pairing code:' "$RUN_ROOT/$label-host.stdout"; do
+		(( SECONDS < deadline )) || fail "$label host did not create its pairing room"
+		kill -0 "${PROCESS_PIDS["$label-host"]}" 2>/dev/null || fail "$label host exited during pairing"
+		sleep 0.1
+	done
 	start_process "$label-guest" "$NS_CLIENT_B" "$RUN_ROOT/$label-guest.stdout" "$RUN_ROOT/$label-guest.stderr" "$CONNECT_BIN" "$SERVER_URL" "$code" --state-dir "$state_b" --name "$label" --network "$network" --interface "wc$label"
 	wait_for_mode "$label" "$NS_CLIENT_A" "$state_a" "$expected_mode"
 	wait_for_mode "$label" "$NS_CLIENT_B" "$state_b" "$expected_mode"
@@ -482,9 +506,10 @@ DOCTOR_OUT="$RUN_ROOT/relay-doctor.stdout"
 DOCTOR_ERR="$RUN_ROOT/relay-doctor.stderr"
 PROCESS_NAMES+=(relay-doctor)
 PROCESS_STDERR[relay-doctor]="$DOCTOR_ERR"
-if ns_exec "$NS_CLIENT_A" timeout 12s "$CONNECT_BIN" doctor "$SERVER_URL" --state-dir "$RELAY_A" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
-	fail "doctor unexpectedly reported UDP reachability after the NAT egress drop"
-fi
+# UDP unavailability is advisory: doctor can succeed when HTTPS relay is
+# available. Assert its actual UDP result rather than treating exit 0 as STUN
+# success.
+ns_exec "$NS_CLIENT_A" timeout 12s "$CONNECT_BIN" doctor "$SERVER_URL" --state-dir "$RELAY_A" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" || fail "doctor failed its HTTPS/platform prerequisites"
 if ! grep -q "Direct UDP:" "$DOCTOR_OUT"; then
 	fail "doctor did not report the simulated UDP egress failure"
 fi

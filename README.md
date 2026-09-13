@@ -18,11 +18,11 @@ wirectl connect vpn.example.com 7k3m-f8q2-h6tw
 
 | 平台 | 架构 | 客户端 | 公网服务端 |
 |---|---|---|---|
-| macOS | arm64、amd64 | 支持 | — |
+| macOS | arm64（Apple Silicon） | 支持 | — |
 | Linux | arm64、amd64 | 支持 | 支持 |
 | Windows | amd64 | 支持 | — |
 
-虚拟网络承载 IPv4 TCP/UDP；直连候选路径支持公网 IPv4、IPv6 和局域网地址。Windows ARM 不在支持范围内。
+macOS Intel（amd64）和 Windows ARM 不在支持范围内。虚拟网络承载 IPv4 TCP/UDP；直连候选路径支持公网 IPv4、IPv6 和局域网地址。
 
 ## 安装
 

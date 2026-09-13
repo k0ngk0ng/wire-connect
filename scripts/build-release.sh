@@ -132,7 +132,10 @@ build_target() {
 	fi
 }
 
-for target in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64 windows-amd64; do
+# Keep this matrix aligned with the supported package matrix in README.md.
+# macOS Intel is intentionally excluded; the published macOS client targets
+# Apple Silicon only.
+for target in linux-amd64 linux-arm64 darwin-arm64 windows-amd64; do
 	build_target "$target"
 done
 

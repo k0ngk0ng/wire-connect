@@ -167,6 +167,12 @@ func serveHTTP(args []string) error {
 		return errors.New("usage: wire-connect-testutil http --addr IP:PORT")
 	}
 	mux := http.NewServeMux()
+	bulk := make([]byte, 4<<20)
+	mux.HandleFunc("/bulk", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprint(len(bulk)))
+		_, _ = w.Write(bulk)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, httpBody)

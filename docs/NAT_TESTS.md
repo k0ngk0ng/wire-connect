@@ -26,6 +26,10 @@ the fixed disposable fixture code, and must report `direct`. An HTTP service
 and a UDP echo service then run behind client B. Client A reaches both services
 through the encrypted WireGuard virtual addresses.
 
+Both paths also transfer a 4 MiB TCP response with SHA-256 content verification
+and echo 1372-byte and 8192-byte UDP payloads, covering a near-MTU datagram and
+inner IPv4 fragmentation/reassembly at the default TUN MTU.
+
 The second scenario inserts a UDP egress drop at both NAT boundaries. HTTPS
 control and DERP WebSocket traffic remain allowed. `doctor` must report the
 STUN failure, the pair must report `relay`, and the same HTTP and UDP virtual
@@ -34,7 +38,8 @@ WireGuard traffic carried by the HTTPS relay; it does not weaken the simulated
 UDP egress restriction.
 
 The test does not claim coverage for symmetric NAT, double NAT, carrier-grade
-NAT, IPv6-only networks, HTTP proxies, packet loss, or MTU stress. Those need
+NAT, IPv6-only networks, HTTP proxies, packet loss, arbitrary path MTUs, or
+long-duration load. Those need
 separate disposable environments and are deliberately not inferred from this
 topology.
 
