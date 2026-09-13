@@ -211,7 +211,7 @@ jobs:
       - name: Install NAT test prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y coreutils curl iproute2 iptables openssl procps
+          sudo apt-get install --no-install-recommends -y coreutils curl iproute2 iptables openssl procps tcpdump
       - name: Build NAT test binaries
         shell: bash
         run: |

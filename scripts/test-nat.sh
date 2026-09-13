@@ -87,7 +87,7 @@ if [[ ! -x "$TESTUTIL_BIN" ]]; then
 	exit 2
 fi
 
-for required in ip iptables curl timeout awk grep sed tail sleep mktemp openssl tr sysctl head sha256sum; do
+for required in ip iptables curl timeout awk grep sed tail sleep mktemp openssl tr sysctl head sha256sum tcpdump; do
 	if ! command -v "$required" >/dev/null 2>&1; then
 		echo "required command is missing: $required" >&2
 		exit 2
@@ -189,6 +189,14 @@ dump_diagnostics() {
 		if [[ -n "$path" && -f "$path" ]]; then
 			echo "[$name]" >&2
 			tail -n 120 "$path" >&2
+		fi
+	done
+	# tcpdump uses quiet summaries only: no packet contents, ICE credentials,
+	# or pairing output. Keep these separate from client stdout.
+	for name in nat-a nat-b; do
+		if [[ -f "$RUN_ROOT/$name.headers" ]]; then
+			echo "[$name UDP/ICMP headers]" >&2
+			tail -n 160 "$RUN_ROOT/$name.headers" >&2
 		fi
 	done
 	echo "--- connection status ---" >&2
@@ -462,6 +470,9 @@ configure_nat "$NS_NAT_A" 198.18.0.2/24 10.201.1.0/24 10.201.1.1/24
 configure_nat "$NS_NAT_B" 198.18.0.3/24 10.202.1.0/24 10.202.1.1/24
 configure_client "$NS_CLIENT_A" 10.201.1.2/24 10.201.1.1
 configure_client "$NS_CLIENT_B" 10.202.1.2/24 10.202.1.1
+
+start_process capture-a "$NS_NAT_A" "$RUN_ROOT/nat-a.headers" "$RUN_ROOT/capture-a.stderr" tcpdump -n -q -l -i wan0 'udp or icmp'
+start_process capture-b "$NS_NAT_B" "$RUN_ROOT/nat-b.headers" "$RUN_ROOT/capture-b.stderr" tcpdump -n -q -l -i wan0 'udp or icmp'
 
 TOKEN_FILE="$RUN_ROOT/enrollment.token"
 CERT_FILE="$RUN_ROOT/server.crt"
