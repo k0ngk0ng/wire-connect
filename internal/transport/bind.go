@@ -324,10 +324,10 @@ func (b *Bind) ParseEndpoint(s string) (wgconn.Endpoint, error) {
 	return &virtualEndpoint{addr: b.endpoint.addr}, nil
 }
 
-// BatchSize intentionally remains one: ICE and DERP both preserve datagram
-// boundaries, and a one-packet callback keeps the lifecycle and queue logic
-// straightforward across all supported operating systems.
-func (*Bind) BatchSize() int { return 1 }
+// BatchSize accepts the full WireGuard batch produced by Linux TUN offload.
+// Send writes each encrypted packet as a separate ICE/DERP datagram; receive
+// may return fewer packets than the available buffer count.
+func (*Bind) BatchSize() int { return wgconn.IdealBatchSize }
 
 // Send writes one or more encrypted WireGuard packets.  Direct writes are
 // attempted first; a failed direct path is retired and the packet is retried

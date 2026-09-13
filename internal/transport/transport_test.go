@@ -320,6 +320,52 @@ func TestICEExcludedIPsFilterLocalAndRemoteCandidates(t *testing.T) {
 	}
 }
 
+func TestBindDirectSendsFullWireGuardBatch(t *testing.T) {
+	b, err := New(context.Background(), RelayConfig{Private: key.NewNode(), Peer: key.NewNode().Public()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Shutdown()
+	left, right := net.Pipe()
+	defer right.Close()
+	_ = left.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = right.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := b.SetDirect(left); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := b.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := make([][]byte, wgconn.IdealBatchSize)
+	for i := range batch {
+		batch[i] = []byte(fmt.Sprintf("encrypted-packet-%d", i))
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer right.Close()
+		buf := make([]byte, 256)
+		for i, want := range batch {
+			n, err := right.Read(buf)
+			if err != nil {
+				done <- err
+				return
+			}
+			if string(buf[:n]) != string(want) {
+				done <- fmt.Errorf("packet %d: got %q, want %q", i, buf[:n], want)
+				return
+			}
+		}
+		done <- nil
+	}()
+	if err := b.Send(batch, ep); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBindDirectReceiveCloseReopenAndFallback(t *testing.T) {
 	private := key.NewNode()
 	b, err := New(context.Background(), RelayConfig{Private: private, Peer: key.NewNode().Public()})
@@ -332,7 +378,7 @@ func TestBindDirectReceiveCloseReopenAndFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if port != 1 || len(fns) != 1 || b.BatchSize() != 1 {
+	if port != 1 || len(fns) != 1 || b.BatchSize() != wgconn.IdealBatchSize {
 		t.Fatalf("Open = %d ports, %d callbacks, batch %d", port, len(fns), b.BatchSize())
 	}
 	ep, err := b.ParseEndpoint("127.0.0.1:1")
@@ -463,6 +509,22 @@ func TestBindRelayWebSocketAndSourceFiltering(t *testing.T) {
 	}
 	if string(got) != string(payload) {
 		t.Fatalf("relay receive = %q, want %q", got, payload)
+	}
+	batch := make([][]byte, wgconn.IdealBatchSize)
+	for i := range batch {
+		batch[i] = []byte(fmt.Sprintf("relay-batch-packet-%d", i))
+	}
+	if err := a.Send(batch, ep); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range batch {
+		got, err := readBindPacketWithin(fns[0], time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("relay batch packet %d = %q, want %q", i, got, want)
+		}
 	}
 
 	// C is connected to the same DERP server but is not B's configured peer;
