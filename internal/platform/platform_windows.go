@@ -153,3 +153,5 @@ func windowsSetupPlanWithBinary(runner commandRunner, netsh string, name string,
 		},
 	}
 }
+
+func nativePrivileges() bool { return windows.GetCurrentProcessToken().IsElevated() }

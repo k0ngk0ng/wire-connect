@@ -107,3 +107,5 @@ func linuxSetupPlan(runner commandRunner, name string, cfg Config) setupPlan {
 			"ip", []string{"-4", "route", "del", peer, "dev", name}),
 	}}
 }
+
+func nativePrivileges() bool { ok, _ := linuxNetAdmin(); return ok }

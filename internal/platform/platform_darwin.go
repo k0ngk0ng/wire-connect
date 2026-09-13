@@ -83,3 +83,5 @@ func darwinSetupPlan(runner commandRunner, name string, cfg Config) setupPlan {
 			"ifconfig", []string{name, "inet", local, "-alias"}),
 	}}
 }
+
+func nativePrivileges() bool { return os.Geteuid() == 0 }

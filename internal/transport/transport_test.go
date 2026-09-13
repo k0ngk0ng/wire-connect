@@ -343,7 +343,6 @@ func TestBindDirectSendsFullWireGuardBatch(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		defer right.Close()
 		buf := make([]byte, 256)
 		for i, want := range batch {
 			n, err := right.Read(buf)
@@ -363,6 +362,17 @@ func TestBindDirectSendsFullWireGuardBatch(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+	var wantSent uint64
+	for _, packet := range batch {
+		wantSent += uint64(len(packet))
+	}
+	stats := b.Stats()
+	if stats.Mode != "direct" || stats.ModeReason != "direct_selected" || stats.ModeSince.IsZero() || stats.DirectRemote == "" {
+		t.Fatalf("direct path stats = %+v, want direct_selected mode", stats)
+	}
+	if stats.DirectSent != wantSent || stats.RelaySent != 0 || stats.Sent != wantSent {
+		t.Fatalf("direct send stats = %+v, want direct=%d relay=0 sent=%d", stats, wantSent, wantSent)
 	}
 }
 
@@ -407,6 +417,10 @@ func TestBindDirectReceiveCloseReopenAndFallback(t *testing.T) {
 	if string(got) != string(payload) {
 		t.Fatalf("direct receive = %q, want %q", got, payload)
 	}
+	stats := b.Stats()
+	if stats.DirectReceived != uint64(len(payload)) || stats.RelayReceived != 0 || stats.Received != uint64(len(payload)) {
+		t.Fatalf("direct receive stats = %+v, want direct=%d relay=0 received=%d", stats, len(payload), len(payload))
+	}
 
 	payload = []byte("outbound packet")
 	readDone := make(chan []byte, 1)
@@ -425,6 +439,10 @@ func TestBindDirectReceiveCloseReopenAndFallback(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("direct send did not reach peer")
+	}
+	stats = b.Stats()
+	if stats.DirectSent != uint64(len(payload)) || stats.RelaySent != 0 || stats.Sent != uint64(len(payload)) {
+		t.Fatalf("direct send stats = %+v, want direct=%d relay=0 sent=%d", stats, len(payload), len(payload))
 	}
 
 	if err := b.Close(); err != nil {
@@ -491,6 +509,9 @@ func TestBindRelayWebSocketAndSourceFiltering(t *testing.T) {
 			t.Fatalf("WaitRelay: %v", err)
 		}
 	}
+	if stats := a.Stats(); stats.Mode != "relay" || stats.ModeReason != "relay_connected" || stats.ModeSince.IsZero() {
+		t.Fatalf("relay path stats = %+v, want relay_connected mode", stats)
+	}
 	fns, _, err := b.Open(0)
 	if err != nil {
 		t.Fatal(err)
@@ -529,6 +550,18 @@ func TestBindRelayWebSocketAndSourceFiltering(t *testing.T) {
 		if string(got) != string(want) {
 			t.Fatalf("relay batch packet %d = %q, want %q", i, got, want)
 		}
+	}
+	var wantRelay uint64
+	wantRelay += uint64(len(payload))
+	for _, packet := range batch {
+		wantRelay += uint64(len(packet))
+	}
+	aStats, bStats := a.Stats(), b.Stats()
+	if aStats.RelaySent != wantRelay || aStats.DirectSent != 0 || aStats.Sent != wantRelay {
+		t.Fatalf("relay send stats = %+v, want relay=%d direct=0 sent=%d", aStats, wantRelay, wantRelay)
+	}
+	if bStats.RelayReceived != wantRelay || bStats.DirectReceived != 0 || bStats.Received != wantRelay {
+		t.Fatalf("relay receive stats = %+v, want relay=%d direct=0 received=%d", bStats, wantRelay, wantRelay)
 	}
 
 	// C is connected to the same DERP server but is not B's configured peer;
@@ -684,6 +717,14 @@ func TestBindDirectFailureFallsBackRelayReconnectsAndShutsDown(t *testing.T) {
 	if stats := a.Stats(); stats.Mode != "relay" || !stats.RelayConnected {
 		t.Fatalf("fallback stats = %+v, want relay", stats)
 	}
+	stats := a.Stats()
+	if stats.ModeReason != "direct_lost" || stats.ModeSince.IsZero() || stats.DirectSent != uint64(len(directPayload)) || stats.RelaySent != uint64(len(relayPayload)) || stats.Sent != uint64(len(directPayload)+len(relayPayload)) {
+		t.Fatalf("fallback path counters = %+v, want direct=%d relay=%d", stats, len(directPayload), len(relayPayload))
+	}
+	bStats := b.Stats()
+	if bStats.RelayReceived != uint64(len(relayPayload)) || bStats.Received != uint64(len(relayPayload)) {
+		t.Fatalf("fallback receive counters = %+v, want relay=%d", bStats, len(relayPayload))
+	}
 
 	// Drop every active WebSocket and require fresh handshakes from both
 	// workers. A successful post-reconnect packet proves the new sessions are
@@ -713,6 +754,16 @@ func TestBindDirectFailureFallsBackRelayReconnectsAndShutsDown(t *testing.T) {
 	}
 	if string(got) != string(reconnectedPayload) {
 		t.Fatalf("post-reconnect payload = %q, want %q", got, reconnectedPayload)
+	}
+	stats = a.Stats()
+	wantSent := uint64(len(directPayload) + len(relayPayload) + len(reconnectedPayload))
+	if stats.Mode != "relay" || stats.RelaySent != uint64(len(relayPayload)+len(reconnectedPayload)) || stats.DirectSent != uint64(len(directPayload)) || stats.Sent != wantSent {
+		t.Fatalf("post-reconnect path counters = %+v, want direct=%d relay=%d sent=%d", stats, len(directPayload), len(relayPayload)+len(reconnectedPayload), wantSent)
+	}
+	bStats = b.Stats()
+	wantReceived := uint64(len(relayPayload) + len(reconnectedPayload))
+	if bStats.RelayReceived != wantReceived || bStats.DirectReceived != 0 || bStats.Received != wantReceived {
+		t.Fatalf("post-reconnect receive counters = %+v, want relay=%d", bStats, wantReceived)
 	}
 
 	if err := b.Close(); err != nil {
@@ -817,6 +868,14 @@ func TestBindICEConsentLossFallsBackToRelay(t *testing.T) {
 	}
 	if stats := a.Stats(); stats.Mode != "relay" {
 		t.Fatalf("A stats after ICE consent loss = %+v, want relay", stats)
+	}
+	stats := a.Stats()
+	if stats.ModeReason != "direct_lost" || stats.DirectSent != 0 || stats.RelaySent != uint64(len(payload)) || stats.Sent != uint64(len(payload)) {
+		t.Fatalf("A counters after ICE consent loss = %+v, want direct=0 relay=%d", stats, len(payload))
+	}
+	bStats := b.Stats()
+	if bStats.RelayReceived != uint64(len(payload)) || bStats.DirectReceived != 0 || bStats.Received != uint64(len(payload)) {
+		t.Fatalf("B counters after ICE consent loss = %+v, want relay=%d", bStats, len(payload))
 	}
 }
 

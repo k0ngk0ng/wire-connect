@@ -41,14 +41,21 @@ type RunOptions struct {
 }
 
 type Status struct {
-	Running       bool      `json:"running"`
-	Mode          string    `json:"mode"`
-	LocalIP       string    `json:"local_ip"`
-	PeerIP        string    `json:"peer_ip"`
-	Sent          uint64    `json:"sent"`
-	Received      uint64    `json:"received"`
-	LastHandshake time.Time `json:"last_handshake,omitempty"`
-	Updated       time.Time `json:"updated"`
+	Running        bool      `json:"running"`
+	Mode           string    `json:"mode"`
+	LocalIP        string    `json:"local_ip"`
+	PeerIP         string    `json:"peer_ip"`
+	Sent           uint64    `json:"sent"`
+	Received       uint64    `json:"received"`
+	DirectSent     uint64    `json:"direct_sent"`
+	DirectReceived uint64    `json:"direct_received"`
+	RelaySent      uint64    `json:"relay_sent"`
+	RelayReceived  uint64    `json:"relay_received"`
+	DirectRemote   string    `json:"direct_remote,omitempty"`
+	ModeSince      time.Time `json:"mode_since,omitempty"`
+	ModeReason     string    `json:"mode_reason,omitempty"`
+	LastHandshake  time.Time `json:"last_handshake,omitempty"`
+	Updated        time.Time `json:"updated"`
 }
 
 func (c *Client) Run(ctx context.Context, p config.Profile, opts RunOptions) error {
@@ -155,7 +162,22 @@ func (c *Client) Run(ctx context.Context, p config.Profile, opts RunOptions) err
 			return
 		}
 		stats := bind.Stats()
-		st := Status{Running: running, Mode: stats.Mode, LocalIP: p.LocalIP, PeerIP: p.PeerIP, Sent: stats.Sent, Received: stats.Received, Updated: time.Now().UTC()}
+		st := Status{
+			Running:        running,
+			Mode:           stats.Mode,
+			LocalIP:        p.LocalIP,
+			PeerIP:         p.PeerIP,
+			Sent:           stats.Sent,
+			Received:       stats.Received,
+			DirectSent:     stats.DirectSent,
+			DirectReceived: stats.DirectReceived,
+			RelaySent:      stats.RelaySent,
+			RelayReceived:  stats.RelayReceived,
+			DirectRemote:   stats.DirectRemote,
+			ModeSince:      stats.ModeSince,
+			ModeReason:     stats.ModeReason,
+			Updated:        time.Now().UTC(),
+		}
 		if ipc, err := wg.IpcGet(); err == nil {
 			for line := range strings.SplitSeq(ipc, "\n") {
 				if raw, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {

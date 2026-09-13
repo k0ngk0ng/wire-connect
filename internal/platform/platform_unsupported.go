@@ -25,3 +25,5 @@ func checkPlatform(context.Context) error {
 func availablePlatform(context.Context, []netip.Addr) error {
 	return fmt.Errorf("%w: client supports linux/darwin amd64 or arm64 and windows amd64", ErrUnsupported)
 }
+
+func nativePrivileges() bool { return true }

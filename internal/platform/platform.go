@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/k0ngk0ng/wire-connect/internal/nethelper"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
@@ -59,6 +60,9 @@ func Open(ctx context.Context, cfg Config) (tun.Device, func() error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if !nativePrivileges() {
+		return nethelper.Open(ctx, nethelper.Config{Name: cfg.Name, Local: cfg.Local.String(), Peer: cfg.Peer.String(), MTU: cfg.MTU})
+	}
 	if err := checkPlatform(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -74,6 +78,9 @@ func Open(ctx context.Context, cfg Config) (tun.Device, func() error, error) {
 func Check(ctx context.Context) error {
 	if err := contextErr(ctx); err != nil {
 		return err
+	}
+	if !nativePrivileges() {
+		return nethelper.Check(ctx)
 	}
 	return checkPlatform(ctx)
 }

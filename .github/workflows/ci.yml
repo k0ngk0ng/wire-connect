@@ -108,6 +108,20 @@ jobs:
         run: |
           set -euo pipefail
           go build -trimpath -buildvcs=false -o ".cache/network/wire-connect-service-testutil${TEST_EXTENSION}" ./cmd/wire-connect-service-testutil
+      - name: Build current-user service lifecycle helper
+        shell: bash
+        env:
+          TEST_EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          go build -trimpath -buildvcs=false -o ".cache/network/wire-connect-user-service-testutil${TEST_EXTENSION}" ./cmd/wire-connect-user-service-testutil
+      - name: Build network helper integration utility
+        shell: bash
+        env:
+          TEST_EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          go build -trimpath -buildvcs=false -o ".cache/network/wire-connect-helper-testutil${TEST_EXTENSION}" ./cmd/wire-connect-helper-testutil
       - name: Fetch adjacent Wintun runtime
         if: matrix.name == 'windows'
         shell: bash
@@ -119,6 +133,54 @@ jobs:
         shell: pwsh
         run: |
           & "$env:GITHUB_WORKSPACE/scripts/verify-wintun.ps1" -Path "$env:GITHUB_WORKSPACE/.cache/network/wintun.dll"
+      - name: Prepare Linux user service manager session
+        if: matrix.name == 'linux' || matrix.name == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+          user="$(id -un)"
+          sudo loginctl enable-linger "$user"
+          sudo systemctl start "user@${uid}.service"
+          echo "XDG_RUNTIME_DIR=/run/user/${uid}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" >> "$GITHUB_ENV"
+          for ((attempt = 0; attempt < 30; attempt++)); do
+            if XDG_RUNTIME_DIR="/run/user/${uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" systemctl --user show-environment >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "systemd user manager did not expose a usable bus" >&2
+          systemctl status "user@${uid}.service" --no-pager || true
+          exit 1
+      - name: Run current-user service lifecycle (Unix)
+        if: matrix.name != 'windows'
+        shell: bash
+        env:
+          WIRE_CONNECT_USER_SERVICE_INTEGRATION: '1'
+          WIRE_CONNECT_USER_SERVICE_REQUIRED: '1'
+          WIRE_CONNECT_USER_SERVICE_HELPER: ${{ github.workspace }}/.cache/network/wire-connect-user-service-testutil
+          WIRE_CONNECT_USER_SERVICE_STATE_ROOT: ${{ github.workspace }}/.cache/user-svc
+        run: |
+          set -euo pipefail
+          mkdir -p "$WIRE_CONNECT_USER_SERVICE_STATE_ROOT"
+          trap 'rm -rf "$WIRE_CONNECT_USER_SERVICE_STATE_ROOT"' EXIT
+          .cache/network/service.test -test.run '^TestRealUserServiceLifecycle$' -test.timeout=2m -test.v
+      - name: Run current-user service lifecycle (Windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $env:WIRE_CONNECT_USER_SERVICE_INTEGRATION = '1'
+          $env:WIRE_CONNECT_USER_SERVICE_REQUIRED = '1'
+          $env:WIRE_CONNECT_USER_SERVICE_HELPER = "$env:GITHUB_WORKSPACE/.cache/network/wire-connect-user-service-testutil.exe"
+          $env:WIRE_CONNECT_USER_SERVICE_STATE_ROOT = "$env:GITHUB_WORKSPACE/.cache/user-svc"
+          New-Item -ItemType Directory -Force -Path $env:WIRE_CONNECT_USER_SERVICE_STATE_ROOT | Out-Null
+          try {
+            & "$env:GITHUB_WORKSPACE/.cache/network/service.test.exe" '-test.run=^TestRealUserServiceLifecycle$' '-test.timeout=2m' '-test.v'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item -LiteralPath $env:WIRE_CONNECT_USER_SERVICE_STATE_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+          }
       - name: Run real TUN and service lifecycle (Unix administrator)
         if: matrix.name != 'windows'
         shell: bash
@@ -139,16 +201,19 @@ jobs:
               state_root="$1"
               platform_test="$2"
               service_test="$3"
+              helper_testutil="$4"
               mkdir -p "$state_root"
               chmod 700 "$state_root"
               trap '\''rm -rf "$state_root"'\'' EXIT
-              "$platform_test" -test.run "$4" -test.timeout=2m -test.v
-              "$service_test" -test.run "$5" -test.timeout=2m -test.v
+              WIRE_CONNECT_HELPER_TESTUTIL="$helper_testutil" \
+                "$platform_test" -test.run "$5" -test.timeout=2m -test.v
+              "$service_test" -test.run "$6" -test.timeout=2m -test.v
             ' sh \
             "$service_state_root" \
             "$GITHUB_WORKSPACE/.cache/network/platform.test" \
             "$GITHUB_WORKSPACE/.cache/network/service.test" \
-            '^TestOpenRealTUNLifecycle$' \
+            "$GITHUB_WORKSPACE/.cache/network/wire-connect-helper-testutil" \
+            '^(TestOpenRealTUNLifecycle|TestRealNetworkHelperLifecycle)$' \
             '^TestRealServiceLifecycle$'
       - name: Run real TUN lifecycle (Windows administrator)
         if: matrix.name == 'windows'
@@ -160,7 +225,11 @@ jobs:
             throw 'The Windows TUN lifecycle test requires an elevated administrator runner.'
           }
           $env:WIRE_CONNECT_NETWORK_TEST = '1'
-          $testArgs = @('-test.run=^TestOpenRealTUNLifecycle$', '-test.timeout=2m', '-test.v')
+          $env:WIRE_CONNECT_HELPER_TESTUTIL = "$env:GITHUB_WORKSPACE/.cache/network/wire-connect-helper-testutil.exe"
+          if (-not (Test-Path -LiteralPath $env:WIRE_CONNECT_HELPER_TESTUTIL -PathType Leaf)) {
+            throw "network helper integration utility is missing: $env:WIRE_CONNECT_HELPER_TESTUTIL"
+          }
+          $testArgs = @('-test.run=^(TestOpenRealTUNLifecycle|TestRealNetworkHelperLifecycle)$', '-test.timeout=2m', '-test.v')
           & "$env:GITHUB_WORKSPACE/.cache/network/platform.test.exe" @testArgs
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE

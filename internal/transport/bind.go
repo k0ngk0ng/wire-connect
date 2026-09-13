@@ -69,12 +69,22 @@ type RelayConfig struct {
 }
 
 // Stats is a snapshot of Bind's packet and path state.  Sent and Received are
-// payload byte counters, rather than frame or packet counters.
+// payload byte counters, rather than frame or packet counters; each is the sum
+// of its direct and relay counterpart.  Receive counters include packets
+// accepted into the WireGuard receive queue, matching Received's historical
+// behavior.
 type Stats struct {
 	Mode           string
 	Sent           uint64
 	Received       uint64
+	DirectSent     uint64
+	DirectReceived uint64
+	RelaySent      uint64
+	RelayReceived  uint64
 	RelayConnected bool
+	DirectRemote   string
+	ModeSince      time.Time
+	ModeReason     string
 }
 
 // Bind implements wireguard-go's conn.Bind using an ICE datagram connection
@@ -107,11 +117,22 @@ type Bind struct {
 	direct *directPath
 	relay  *relaySession
 	wake   chan struct{}
+	mode   string
+	// modeSince and modeReason describe changes to the effective path selected
+	// for packet delivery.  They are protected by pathMu alongside direct and
+	// relay.  ICE establishment alone never changes packet counters; counters
+	// are updated only after a path I/O succeeds.
+	modeSince  time.Time
+	modeReason string
 
 	sendMu sync.Mutex
 
-	bytesSent     atomic.Uint64
-	bytesReceived atomic.Uint64
+	bytesSent      atomic.Uint64
+	bytesReceived  atomic.Uint64
+	directSent     atomic.Uint64
+	directReceived atomic.Uint64
+	relaySent      atomic.Uint64
+	relayReceived  atomic.Uint64
 
 	workers       sync.WaitGroup
 	workerMu      sync.Mutex
@@ -148,6 +169,13 @@ func (g *receiveGeneration) closed() bool {
 type directPath struct {
 	conn net.Conn
 }
+
+type trafficPath uint8
+
+const (
+	trafficDirect trafficPath = iota + 1
+	trafficRelay
+)
 
 type relaySession struct {
 	nc     net.Conn
@@ -203,6 +231,9 @@ func New(ctx context.Context, cfg RelayConfig) (*Bind, error) {
 		inbound:    make(chan []byte, queueDepth),
 		shutdownCh: make(chan struct{}),
 		wake:       make(chan struct{}),
+		mode:       "none",
+		modeSince:  time.Now().UTC(),
+		modeReason: "waiting_for_transport",
 	}
 
 	if relayURL != "" {
@@ -283,6 +314,7 @@ func (b *Bind) Shutdown() error {
 		relay := b.relay
 		b.relay = nil
 		b.signalRelayLocked()
+		b.updateModeLocked("shutdown")
 		b.pathMu.Unlock()
 		if direct != nil && direct.conn != nil {
 			_ = direct.conn.Close()
@@ -369,7 +401,7 @@ func (b *Bind) sendOne(pkt []byte) error {
 	if direct != nil && direct.conn != nil {
 		n, err := direct.conn.Write(pkt)
 		if err == nil && n == len(pkt) {
-			b.bytesSent.Add(uint64(n))
+			b.recordSent(trafficDirect, n)
 			return nil
 		}
 		if err == nil {
@@ -384,7 +416,7 @@ func (b *Bind) sendOne(pkt []byte) error {
 		err := relay.client.Send(b.peer, pkt)
 		_ = relay.nc.SetWriteDeadline(time.Time{})
 		if err == nil {
-			b.bytesSent.Add(uint64(len(pkt)))
+			b.recordSent(trafficRelay, len(pkt))
 			return nil
 		} else {
 			directErr = errors.Join(directErr, err)
@@ -426,6 +458,7 @@ func (b *Bind) SetDirect(c net.Conn) error {
 	}
 	old := b.direct
 	b.direct = p
+	b.updateModeLocked("direct_selected")
 	b.pathMu.Unlock()
 	if old != nil && old.conn != nil {
 		_ = old.conn.Close()
@@ -452,6 +485,9 @@ func (b *Bind) DropDirect() {
 	b.pathMu.Lock()
 	p := b.direct
 	b.direct = nil
+	if p != nil {
+		b.updateModeLocked("direct_dropped")
+	}
 	b.pathMu.Unlock()
 	if p != nil && p.conn != nil {
 		_ = p.conn.Close()
@@ -477,12 +513,18 @@ func (b *Bind) Stats() Stats {
 	b.pathMu.RLock()
 	direct := b.direct != nil
 	relay := b.relay != nil
+	directRemote := ""
+	if b.direct != nil && b.direct.conn != nil {
+		if addr := b.direct.conn.RemoteAddr(); addr != nil {
+			directRemote = addr.String()
+		}
+	}
+	mode := b.mode
+	modeSince := b.modeSince
+	modeReason := b.modeReason
 	b.pathMu.RUnlock()
-	mode := "none"
-	if direct {
-		mode = "direct"
-	} else if relay {
-		mode = "relay"
+	if mode == "" {
+		mode = effectiveMode(direct, relay, b.isShutdown())
 	}
 	if b.isShutdown() {
 		mode = "closed"
@@ -491,7 +533,66 @@ func (b *Bind) Stats() Stats {
 		Mode:           mode,
 		Sent:           b.bytesSent.Load(),
 		Received:       b.bytesReceived.Load(),
+		DirectSent:     b.directSent.Load(),
+		DirectReceived: b.directReceived.Load(),
+		RelaySent:      b.relaySent.Load(),
+		RelayReceived:  b.relayReceived.Load(),
 		RelayConnected: relay,
+		DirectRemote:   directRemote,
+		ModeSince:      modeSince,
+		ModeReason:     modeReason,
+	}
+}
+
+func effectiveMode(direct, relay, closed bool) string {
+	if closed {
+		return "closed"
+	}
+	if direct {
+		return "direct"
+	}
+	if relay {
+		return "relay"
+	}
+	return "none"
+}
+
+// updateModeLocked records only changes to the effective path.  A relay can
+// reconnect while direct remains selected, and that does not constitute a
+// mode change because direct traffic still has priority.
+func (b *Bind) updateModeLocked(reason string) {
+	next := effectiveMode(b.direct != nil, b.relay != nil, b.stopped.Load())
+	if next == b.mode {
+		return
+	}
+	b.mode = next
+	b.modeSince = time.Now().UTC()
+	b.modeReason = reason
+}
+
+func (b *Bind) recordSent(path trafficPath, n int) {
+	if n <= 0 {
+		return
+	}
+	b.bytesSent.Add(uint64(n))
+	switch path {
+	case trafficDirect:
+		b.directSent.Add(uint64(n))
+	case trafficRelay:
+		b.relaySent.Add(uint64(n))
+	}
+}
+
+func (b *Bind) recordReceived(path trafficPath, n int) {
+	if n <= 0 {
+		return
+	}
+	b.bytesReceived.Add(uint64(n))
+	switch path {
+	case trafficDirect:
+		b.directReceived.Add(uint64(n))
+	case trafficRelay:
+		b.relayReceived.Add(uint64(n))
 	}
 }
 
@@ -562,7 +663,7 @@ func (b *Bind) receive(g *receiveGeneration) wgconn.ReceiveFunc {
 	}
 }
 
-func (b *Bind) enqueue(pkt []byte) {
+func (b *Bind) enqueue(path trafficPath, pkt []byte) {
 	if len(pkt) == 0 || len(pkt) > maxPacketSize || b.isShutdown() {
 		return
 	}
@@ -570,7 +671,7 @@ func (b *Bind) enqueue(pkt []byte) {
 	copy(copyPkt, pkt)
 	select {
 	case b.inbound <- copyPkt:
-		b.bytesReceived.Add(uint64(len(copyPkt)))
+		b.recordReceived(path, len(copyPkt))
 	default:
 		// A full queue is a deliberate drop policy.  WireGuard retransmits
 		// handshake and keepalive packets, and an unbounded queue would let a
@@ -584,7 +685,7 @@ func (b *Bind) directReadLoop(p *directPath) {
 	for {
 		n, err := p.conn.Read(buf)
 		if n > 0 {
-			b.enqueue(buf[:n])
+			b.enqueue(trafficDirect, buf[:n])
 		}
 		if err != nil {
 			b.dropDirectPath(p)
@@ -604,6 +705,7 @@ func (b *Bind) dropDirectPath(p *directPath) {
 	b.pathMu.Lock()
 	if b.direct == p {
 		b.direct = nil
+		b.updateModeLocked("direct_lost")
 	}
 	b.pathMu.Unlock()
 	_ = p.conn.Close()
@@ -721,7 +823,7 @@ func (b *Bind) receiveRelay(s *relaySession) error {
 			if m.Source.Compare(b.peer) != 0 {
 				continue
 			}
-			b.enqueue(m.Data)
+			b.enqueue(trafficRelay, m.Data)
 		case derp.PingMessage:
 			var ping [8]byte
 			copy(ping[:], m[:])
@@ -743,6 +845,7 @@ func (b *Bind) replaceRelay(s *relaySession) {
 	old := b.relay
 	b.relay = s
 	b.signalRelayLocked()
+	b.updateModeLocked("relay_connected")
 	b.pathMu.Unlock()
 	if old != nil && old != s {
 		old.close()
@@ -754,6 +857,7 @@ func (b *Bind) clearRelay(s *relaySession) {
 	if b.relay == s {
 		b.relay = nil
 		b.signalRelayLocked()
+		b.updateModeLocked("relay_lost")
 	}
 	b.pathMu.Unlock()
 }
