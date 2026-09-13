@@ -34,6 +34,8 @@ gh attestation verify <下载的压缩包> --repo k0ngk0ng/wire-connect
 
 将 `bin/wirectl-connect` 放到 `PATH` 或 `wirectl` 同目录。Windows 使用 `bin/wirectl-connect.exe`，保留同目录的官方 `wintun.dll` 和许可证。不要从第三方 DLL 下载站获取驱动。
 
+Windows 的 `wirectl` 需要支持 `.exe` 插件分发；如果旧版主程序无法识别 `connect`，直接运行 `wirectl-connect.exe`，参数相同。
+
 创建虚拟网卡和配置路由需要管理员权限。Linux/macOS 如果以管理员身份运行客户端，请在同一个管理员环境中运行登录、连接和恢复命令；使用 root 的默认状态目录时例如 `sudo -H wirectl connect ...`（直接运行插件则使用 `sudo -H wirectl-connect ...`）。root 创建的状态目录需要继续由 root 使用；也可以让同一个用户为每次命令显式指定同一个私有 `--state-dir`。Windows 使用管理员 PowerShell，下面命令中的 `sudo -H` 前缀应去掉后直接运行。
 
 ## 第一次使用

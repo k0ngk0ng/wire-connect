@@ -94,6 +94,19 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
+          Pair two devices with a short code and access the peer through its
+          WireGuard virtual IP. ICE/STUN prefers UDP direct connectivity;
+          authenticated HTTPS/DERP relay is used when direct access fails.
+          Native background services support saved connections and restart.
+
+          Client archives: Linux amd64/arm64, macOS arm64, Windows amd64.
+          The public server runs on Linux. Windows includes official x64 Wintun.
+          Install beside wirectl to use its connect command, or run the
+          wirectl-connect executable directly with the same arguments.
+
+          Setup and validation boundaries:
+          https://github.com/$GITHUB_REPOSITORY/blob/$TAG/README.md
+
           This release was built by the verified CI workflow for the tagged commit.
           SHA256SUMS is included with all archives and THIRD_PARTY_INVENTORY.txt.
           GitHub artifact attestations are attached to the release subjects.

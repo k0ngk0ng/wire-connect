@@ -11,7 +11,7 @@ Implementation and release qualification are in progress. This file records actu
 | Windows amd64 service, SCM lifecycle and Administrator-to-LocalSystem Named Pipe | Passed in the elevated Windows lifecycle job of [CI 34756212350](https://github.com/k0ngk0ng/wire-connect/actions/runs/34756212350) |
 | Linux/macOS service installation and lifecycle | Passed in the Linux amd64/arm64 and macOS arm64 lifecycle jobs of [CI 34756212350](https://github.com/k0ngk0ng/wire-connect/actions/runs/34756212350); Unix runs use root-owned disposable state roots because the installer rejects untrusted state-directory ancestors |
 | Server restart and path failure recovery | Client tests cover relay recovery after server restart and surviving direct traffic while the server is offline; transport tests cover actual ICE consent loss and DERP reconnect |
-| Separate NATs, UDP blocked, bulk TCP and fragmented UDP | Disposable namespace tests remain a required CI gate. NAT qualification is still pending; [CI 34756212350](https://github.com/k0ngk0ng/wire-connect/actions/runs/34756212350) passed the four platform TUN/service jobs while its `nat-linux` gate did not qualify direct mode |
+| Separate NATs, UDP blocked, bulk TCP and fragmented UDP | Passed in the `nat-linux` job of [CI 34757053195](https://github.com/k0ngk0ng/wire-connect/actions/runs/34757053195): ordinary stateful NAT selected direct; blocking server HTTPS during application transfers ruled out relay fallback; blocked UDP selected relay. Both paths verified 4 MiB TCP by SHA-256 and 1372/8192-byte UDP echoes |
 | Public GitHub repository and release artifacts | Public repository created; Actions release and verified release downloads pending |
 | Independent third-party cryptographic audit | Not performed |
 

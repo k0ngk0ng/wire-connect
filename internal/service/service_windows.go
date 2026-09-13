@@ -17,6 +17,16 @@ import (
 
 const windowsServiceWait = 30 * time.Second
 
+const windowsProcessWaitSlice = 100 * time.Millisecond
+
+var (
+	windowsOpenProcess = func(pid uint32) (windows.Handle, error) {
+		return windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	}
+	windowsWaitForSingleObject = windows.WaitForSingleObject
+	windowsCloseProcess        = windows.Close
+)
+
 type windowsServiceManager interface {
 	Disconnect() error
 	OpenService(string) (windowsServiceHandle, error)
@@ -282,12 +292,61 @@ func stopAndDisableWindows(ctx context.Context, service windowsServiceHandle, na
 	if err != nil {
 		return fmt.Errorf("wire-connect: query Windows service %q: %w", name, err)
 	}
-	if current.State != svc.Stopped {
-		if _, err := service.Control(svc.Stop); err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
-			return fmt.Errorf("wire-connect: stop Windows service %q: %w", name, err)
+	var process windows.Handle
+	var processPID uint32
+	processCaptured := false
+	releaseProcess := func() error {
+		if !processCaptured {
+			return nil
 		}
-		if err := waitWindowsState(ctx, service, svc.Stopped, windowsServiceWait); err != nil {
-			return fmt.Errorf("wire-connect: wait for Windows service %q to stop: %w", name, err)
+		processCaptured = false
+		return windowsCloseProcess(process)
+	}
+	defer func() { _ = releaseProcess() }()
+	if current.State != svc.Stopped {
+		if current.ProcessId != 0 {
+			processPID = current.ProcessId
+			process, err = windowsOpenProcess(processPID)
+			if err == nil {
+				processCaptured = true
+			} else if windowsProcessGone(err) {
+				// The service may have exited between QueryServiceStatusEx and
+				// OpenProcess. Re-query before acting on the service. If SCM now
+				// reports another PID, it is safe to capture only that new PID;
+				// never reopen the vanished PID, which could have been reused by
+				// an unrelated process.
+				current, err = service.Query()
+				if err != nil {
+					return fmt.Errorf("wire-connect: re-query Windows service %q after process exit: %w", name, err)
+				}
+				if current.State != svc.Stopped && current.ProcessId != 0 && current.ProcessId != processPID {
+					processPID = current.ProcessId
+					process, err = windowsOpenProcess(processPID)
+					if err == nil {
+						processCaptured = true
+					} else if !windowsProcessGone(err) {
+						return fmt.Errorf("wire-connect: open Windows service %q process %d: %w", name, processPID, err)
+					}
+				}
+			} else {
+				return fmt.Errorf("wire-connect: open Windows service %q process %d: %w", name, processPID, err)
+			}
+		}
+		if current.State != svc.Stopped {
+			if _, err := service.Control(svc.Stop); err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
+				return fmt.Errorf("wire-connect: stop Windows service %q: %w", name, err)
+			}
+			if err := waitWindowsState(ctx, service, svc.Stopped, windowsServiceWait); err != nil {
+				return fmt.Errorf("wire-connect: wait for Windows service %q to stop: %w", name, err)
+			}
+		}
+		if processCaptured {
+			if err := waitWindowsProcessExit(ctx, process, windowsServiceWait); err != nil {
+				return fmt.Errorf("wire-connect: wait for Windows service %q process %d to exit: %w", name, processPID, err)
+			}
+			if err := releaseProcess(); err != nil {
+				return fmt.Errorf("wire-connect: close Windows service %q process handle: %w", name, err)
+			}
 		}
 	}
 	config, err := service.Config()
@@ -299,6 +358,54 @@ func stopAndDisableWindows(ctx context.Context, service windowsServiceHandle, na
 		return fmt.Errorf("wire-connect: disable Windows service %q: %w", name, err)
 	}
 	return nil
+}
+
+func windowsProcessGone(err error) bool {
+	return errors.Is(err, windows.ERROR_INVALID_PARAMETER) || errors.Is(err, windows.ERROR_NOT_FOUND)
+}
+
+// waitWindowsProcessExit waits on the process object captured before a stop
+// request. Holding that object prevents a later PID reuse from making this
+// check refer to a different process. A short native wait interval lets the
+// context cancel promptly without putting a goroutine around a blocking OS
+// call.
+func waitWindowsProcessExit(ctx context.Context, process windows.Handle, timeout time.Duration) error {
+	if err := contextErr(ctx); err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		return errors.New("invalid process wait timeout")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("timed out waiting for process exit")
+		}
+		waitFor := windowsProcessWaitSlice
+		if remaining < waitFor {
+			waitFor = remaining
+		}
+		waitMillis := uint32(waitFor / time.Millisecond)
+		if waitMillis == 0 {
+			waitMillis = 1
+		}
+		event, err := windowsWaitForSingleObject(process, waitMillis)
+		if err != nil {
+			return err
+		}
+		switch event {
+		case windows.WAIT_OBJECT_0:
+			return nil
+		case uint32(windows.WAIT_TIMEOUT):
+			continue
+		default:
+			return fmt.Errorf("WaitForSingleObject returned 0x%x", event)
+		}
+	}
 }
 
 // Uninstall removes the SCM record and the package-owned Program Files copy.

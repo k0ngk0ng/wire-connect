@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -17,9 +18,16 @@ import (
 type windowsFileOperator struct{}
 
 var (
-	platformFiles         fileOperator = windowsFileOperator{}
-	windowsProgramFiles                = findProgramFiles
-	windowsValidateSource              = validateWindowsSource
+	platformFiles          fileOperator = windowsFileOperator{}
+	windowsProgramFiles                 = findProgramFiles
+	windowsValidateSource               = validateWindowsSource
+	windowsRename                       = windows.Rename
+	windowsSetProtectedACL              = setWindowsProtectedACL
+)
+
+const (
+	windowsFileReplaceWait          = 30 * time.Second
+	windowsFileReplaceRetryInterval = 100 * time.Millisecond
 )
 
 func (windowsFileOperator) ValidateStateDir(ctx context.Context, path string) error {
@@ -296,10 +304,10 @@ func windowsCopyAtomic(ctx context.Context, source, destination string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := setWindowsProtectedACL(tmpPath, false); err != nil {
+	if err := windowsSetProtectedACL(tmpPath, false); err != nil {
 		return fmt.Errorf("protect installed file: %w", err)
 	}
-	if err := windows.Rename(tmpPath, destination); err != nil {
+	if err := windowsRenameWithRetry(ctx, tmpPath, destination, windowsFileReplaceWait); err != nil {
 		return fmt.Errorf("install protected file: %w", err)
 	}
 	return nil
@@ -334,13 +342,68 @@ func windowsWriteAtomic(ctx context.Context, path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := setWindowsProtectedACL(tmpPath, false); err != nil {
+	if err := windowsSetProtectedACL(tmpPath, false); err != nil {
 		return err
 	}
 	if err := windows.Rename(tmpPath, path); err != nil {
 		return err
 	}
 	return nil
+}
+
+func windowsRenameWithRetry(ctx context.Context, oldPath, newPath string, timeout time.Duration) error {
+	if err := contextErr(ctx); err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		return errors.New("invalid protected file replacement timeout")
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := contextErr(ctx); err != nil {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if lastErr != nil {
+				return fmt.Errorf("timed out replacing protected file: %w", lastErr)
+			}
+			return errors.New("timed out replacing protected file")
+		}
+		err := windowsRename(oldPath, newPath)
+		if err == nil {
+			return nil
+		}
+		if !windowsReplaceRetryable(err) {
+			return err
+		}
+		lastErr = err
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("timed out replacing protected file: %w", lastErr)
+		}
+		waitFor := windowsFileReplaceRetryInterval
+		if remaining < waitFor {
+			waitFor = remaining
+		}
+		timer := time.NewTimer(waitFor)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func windowsReplaceRetryable(err error) bool {
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) || errors.Is(err, windows.ERROR_SHARING_VIOLATION)
 }
 
 const windowsProtectedFileSDDL = "O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)"

@@ -107,3 +107,7 @@ CI job should build both Linux helpers, run the command on a disposable
 Ubuntu runner with `WIRE_CONNECT_NAT_TEST=1`, and retain only the pass/fail
 result (or sanitized stderr) as evidence. A green build or a local loopback
 integration test alone is not evidence that either NAT scenario passed.
+
+Both scenarios, including direct traffic with server HTTPS blocked, passed in
+the `nat-linux` job of [CI 34757053195](https://github.com/k0ngk0ng/wire-connect/actions/runs/34757053195).
+The release workflow runs this gate again for the tagged commit.

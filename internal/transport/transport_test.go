@@ -510,7 +510,11 @@ func TestBindRelayWebSocketAndSourceFiltering(t *testing.T) {
 	if string(got) != string(payload) {
 		t.Fatalf("relay receive = %q, want %q", got, payload)
 	}
-	batch := make([][]byte, wgconn.IdealBatchSize)
+	// DERP is a best-effort datagram relay with a 32-packet server queue.
+	// Keep this burst below that queue; a full 128-packet burst can legitimately
+	// drop packets when the server sender is not scheduled until after Send.
+	// The direct test above separately exercises the full WireGuard batch.
+	batch := make([][]byte, 8)
 	for i := range batch {
 		batch[i] = []byte(fmt.Sprintf("relay-batch-packet-%d", i))
 	}
