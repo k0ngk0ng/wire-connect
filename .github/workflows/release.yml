@@ -50,9 +50,36 @@ jobs:
           test -s dist/SHA256SUMS
           (cd dist && sha256sum -c SHA256SUMS)
       - name: Attest release artifacts
+        id: attest
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/*
+      - name: Verify release provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/release.yml
+          SOURCE_DIGEST: ${{ github.sha }}
+          GH_CONFIG_DIR: ${{ github.workspace }}/.cache/gh
+          XDG_CACHE_HOME: ${{ github.workspace }}/.cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GH_CONFIG_DIR" "$XDG_CACHE_HOME"
+          test -s "$BUNDLE_PATH"
+          mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0 | sort -z)
+          if ((${#assets[@]} == 0)); then
+            echo 'no release assets were produced' >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            gh attestation verify "$asset" \
+              --bundle "$BUNDLE_PATH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$SIGNER_WORKFLOW" \
+              --source-digest "$SOURCE_DIGEST" \
+              --deny-self-hosted-runners
+          done
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

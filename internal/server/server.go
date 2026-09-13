@@ -21,10 +21,10 @@ import (
 
 	"github.com/k0ngk0ng/wire-connect/internal/config"
 	"github.com/k0ngk0ng/wire-connect/internal/control"
+	"github.com/pion/stun/v4"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/time/rate"
 	"tailscale.com/derp/derpserver"
-	"tailscale.com/net/stun"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
@@ -252,16 +252,25 @@ func ServeSTUN(ctx context.Context, pc net.PacketConn) error {
 		if !lim.Allow() {
 			continue
 		}
-		tx, err := stun.ParseBindingRequest(buf[:n])
-		if err != nil {
+		// Parse standard STUN here. Tailscale's ParseBindingRequest requires
+		// its proprietary SOFTWARE marker and rejects ordinary ICE clients.
+		request := &stun.Message{Raw: buf[:n]}
+		if err := request.Decode(); err != nil || request.Type != stun.BindingRequest {
+			continue
+		}
+		if request.Contains(stun.AttrFingerprint) && stun.Fingerprint.Check(request) != nil {
 			continue
 		}
 		udp, ok := addr.(*net.UDPAddr)
 		if !ok {
 			continue
 		}
-		response := stun.Response(tx, udp.AddrPort())
-		if _, err := pc.WriteTo(response, addr); err != nil && ctx.Err() != nil {
+		response, err := stun.Build(request, stun.BindingSuccess,
+			&stun.XORMappedAddress{IP: udp.IP, Port: udp.Port}, stun.Fingerprint)
+		if err != nil {
+			continue
+		}
+		if _, err := pc.WriteTo(response.Raw, addr); err != nil && ctx.Err() != nil {
 			return nil
 		}
 	}

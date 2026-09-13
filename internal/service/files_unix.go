@@ -185,13 +185,23 @@ func validateInstallDir(path string) error {
 }
 
 func ensureSecureInstallParent(path string) error {
-	cleanRoot := filepath.Clean(unixInstallRoot)
+	return ensureSecureInstallParentAt(path, unixInstallRoot, requireRootOwner)
+}
+
+// ensureSecureInstallParentAt is the path-policy implementation behind the
+// privileged installer. installRoot is injectable for filesystem-policy tests;
+// production callers always pass unixInstallRoot and requireRootOwner.
+func ensureSecureInstallParentAt(path, installRoot string, ownerCheck func(os.FileInfo, string) error) error {
+	if ownerCheck == nil {
+		return errors.New("wire-connect: nil trusted-directory owner checker")
+	}
+	cleanRoot := filepath.Clean(installRoot)
 	cleanPath := filepath.Clean(path)
 	rel, err := filepath.Rel(cleanRoot, cleanPath)
 	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path %q is outside the package installation root", path)
 	}
-	if err := checkTrustedAncestors(filepath.Dir(cleanRoot)); err != nil {
+	if err := ensureTrustedAncestorsAt(filepath.Dir(cleanRoot), ownerCheck); err != nil {
 		return err
 	}
 	base := filepath.Dir(cleanRoot)
@@ -205,54 +215,116 @@ func ensureSecureInstallParent(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		created := false
-		st, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			if err := os.Mkdir(current, 0755); err != nil {
-				return err
-			}
-			created = true
-			st, err = os.Lstat(current)
-		}
-		if err != nil {
+		if err := ensureTrustedDirectoryAt(current, ownerCheck); err != nil {
 			return err
-		}
-		if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
-			return fmt.Errorf("%q is not a real directory", current)
-		}
-		if err := requireRootOwner(st, current); err != nil {
-			return err
-		}
-		if st.Mode().Perm()&0022 != 0 {
-			return fmt.Errorf("%q is writable by a non-root user", current)
-		}
-		if created {
-			if err := os.Chmod(current, 0755); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
 }
 
-func checkTrustedAncestors(path string) error {
+func ensureTrustedAncestorsAt(path string, ownerCheck func(os.FileInfo, string) error) error {
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) {
 		return errors.New("directory path must be absolute")
+	}
+	if ownerCheck == nil {
+		return errors.New("wire-connect: nil trusted-directory owner checker")
+	}
+
+	var missing []string
+	for current := clean; ; current = filepath.Dir(current) {
+		st, err := os.Lstat(current)
+		if err == nil {
+			if err := validateTrustedDirectory(st, current, ownerCheck); err != nil {
+				return err
+			}
+			// A protected leaf can still be replaced through a writable or
+			// untrusted ancestor. Validate the whole existing chain before
+			// creating anything below it.
+			if err := checkTrustedAncestorsWith(current, ownerCheck); err != nil {
+				return err
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				if err := ensureTrustedDirectoryAt(missing[i], ownerCheck); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect trusted directory %q: %w", current, err)
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return fmt.Errorf("inspect trusted directory %q: path has no existing root", clean)
+		}
+	}
+}
+
+func ensureTrustedDirectoryAt(path string, ownerCheck func(os.FileInfo, string) error) error {
+	st, err := os.Lstat(path)
+	created := false
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.Mkdir(path, 0755); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("create trusted directory %q: %w", path, err)
+			}
+		} else {
+			created = true
+		}
+		st, err = os.Lstat(path)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect trusted directory %q: %w", path, err)
+	}
+	if created {
+		// Mkdir is subject to the process umask. Set the exact package-parent
+		// mode only for directories this invocation created; an existing
+		// administrator-owned directory is never rewritten.
+		if err := os.Chmod(path, 0755); err != nil {
+			return fmt.Errorf("protect trusted directory %q: %w", path, err)
+		}
+		st, err = os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect trusted directory %q after creation: %w", path, err)
+		}
+	}
+	return validateTrustedDirectory(st, path, ownerCheck)
+}
+
+func validateTrustedDirectory(st os.FileInfo, path string, ownerCheck func(os.FileInfo, string) error) error {
+	if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		return fmt.Errorf("trusted directory %q is not a real directory", path)
+	}
+	if err := ownerCheck(st, path); err != nil {
+		return err
+	}
+	if st.Mode().Perm()&0022 != 0 {
+		return fmt.Errorf("trusted directory %q is writable by a non-root user", path)
+	}
+	return nil
+}
+
+func checkTrustedAncestors(path string) error {
+	return checkTrustedAncestorsWith(path, requireRootOwner)
+}
+
+func checkTrustedAncestorsWith(path string, ownerCheck func(os.FileInfo, string) error) error {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return errors.New("directory path must be absolute")
+	}
+	if ownerCheck == nil {
+		return errors.New("wire-connect: nil trusted-directory owner checker")
 	}
 	for current := clean; ; current = filepath.Dir(current) {
 		st, err := os.Lstat(current)
 		if err != nil {
 			return fmt.Errorf("inspect trusted directory %q: %w", current, err)
 		}
-		if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
-			return fmt.Errorf("trusted directory %q is not a real directory", current)
-		}
-		if err := requireRootOwner(st, current); err != nil {
+		if err := validateTrustedDirectory(st, current, ownerCheck); err != nil {
 			return err
-		}
-		if st.Mode().Perm()&0022 != 0 {
-			return fmt.Errorf("trusted directory %q is writable by a non-root user", current)
 		}
 		if current == filepath.Dir(current) {
 			break

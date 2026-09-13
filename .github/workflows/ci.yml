@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_call:
     inputs:
@@ -23,6 +24,8 @@ jobs:
         include:
           - name: linux
             os: ubuntu-24.04
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
           - name: macos
             os: macos-14
           - name: windows
@@ -56,6 +59,9 @@ jobs:
         include:
           - name: linux
             os: ubuntu-24.04
+            extension: ''
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
             extension: ''
           - name: macos
             os: macos-14
@@ -119,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           case '${{ matrix.name }}' in
-            linux) service_state_root='/var/lib/wire-connect-integration' ;;
+            linux|linux-arm64) service_state_root='/var/lib/wire-connect-integration' ;;
             macos) service_state_root='/Library/wire-connect-integration' ;;
             *) echo "unsupported Unix CI matrix entry: ${{ matrix.name }}" >&2; exit 2 ;;
           esac
