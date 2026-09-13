@@ -266,6 +266,14 @@ configure_nat() {
 	ns_exec "$ns" sysctl -qw net.ipv4.ip_forward=1 || fail "could not enable forwarding in $ns"
 	ns_exec "$ns" ip route add default via 198.18.0.1 dev wan0 || fail "could not add NAT default route in $ns"
 	iptables_ns "$ns" -P FORWARD DROP || fail "could not set NAT forwarding policy in $ns"
+	# These routers expose no UDP services on their WAN addresses. Silently
+	# discard an unsolicited packet which has no reverse NAT mapping. Letting
+	# it reach local INPUT would confirm a non-NAT conntrack entry (and send
+	# ICMP port-unreachable); a concurrent outbound check can then collide
+	# with that tuple and MASQUERADE changes its source port. Drop before
+	# confirmation, as a firewalling home router does. Mapped replies still
+	# traverse FORWARD and must match ESTABLISHED/RELATED below.
+	iptables_ns "$ns" -A INPUT -i wan0 -p udp -j DROP || fail "could not protect router UDP input in $ns"
 	iptables_ns "$ns" -t nat -A POSTROUTING -s "$lan_net" -o wan0 -j MASQUERADE || fail "could not install masquerade in $ns"
 	iptables_ns "$ns" -A FORWARD -i lan0 -o wan0 -j ACCEPT || fail "could not allow outbound forwarding in $ns"
 	iptables_ns "$ns" -A FORWARD -i wan0 -o lan0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || fail "could not allow return forwarding in $ns"
