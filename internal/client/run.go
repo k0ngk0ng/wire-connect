@@ -22,6 +22,7 @@ import (
 	"github.com/k0ngk0ng/wire-connect/internal/control"
 	"github.com/k0ngk0ng/wire-connect/internal/platform"
 	"github.com/k0ngk0ng/wire-connect/internal/transport"
+	pionice "github.com/pion/ice/v4"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 	"tailscale.com/types/key"
@@ -240,7 +241,7 @@ func (c *Client) maintainDirect(ctx context.Context, p config.Profile, bind *tra
 				var ch *channel
 				ch, err = newChannel(ctx, s, p.Secret, p.Host, c.Server+"/pairs/"+p.PairID)
 				if err == nil {
-					err = runICENegotiation(ctx, ch, p.Host, stunURL, opts.RelayOnly, bind, active, excludedIPs...)
+					err = runICENegotiation(ctx, ch, p.Host, stunURL, opts.RelayOnly, bind, active, opts.Log, excludedIPs...)
 				}
 			}
 			s.close()
@@ -258,7 +259,7 @@ func (c *Client) maintainDirect(ctx context.Context, p config.Profile, bind *tra
 	}
 }
 
-func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL string, relayOnly bool, bind *transport.Bind, active *activeICE, excludedIPs ...netip.Addr) error {
+func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL string, relayOnly bool, bind *transport.Bind, active *activeICE, log *slog.Logger, excludedIPs ...netip.Addr) error {
 	for ctx.Err() == nil {
 		if host {
 			for bind.Direct() {
@@ -291,6 +292,7 @@ func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL stri
 			if err == nil {
 				err = ch.recv(attemptCtx, &remote)
 			}
+			logICECandidates(log, msg.Offer, remote.Offer)
 			if err == nil && remote.Generation != msg.Generation {
 				err = errors.New("ICE generation mismatch")
 			}
@@ -300,6 +302,7 @@ func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL stri
 			}
 			cancel()
 			if err == nil && conn != nil {
+				log.Debug("ICE connected", "local", conn.LocalAddr(), "remote", conn.RemoteAddr())
 				if err := bind.SetDirect(conn); err != nil {
 					agent.Close()
 					return err
@@ -344,12 +347,14 @@ func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL stri
 			if err == nil {
 				err = ch.send(attemptCtx, msg)
 			}
+			logICECandidates(log, msg.Offer, remote.Offer)
 			var conn net.Conn
 			if err == nil {
 				conn, err = agent.Connect(attemptCtx, remote.Offer)
 			}
 			cancel()
 			if err == nil {
+				log.Debug("ICE connected", "local", conn.LocalAddr(), "remote", conn.RemoteAddr())
 				if err := bind.SetDirect(conn); err != nil {
 					agent.Close()
 					return err
@@ -362,6 +367,25 @@ func runICENegotiation(ctx context.Context, ch *channel, host bool, stunURL stri
 		}
 	}
 	return ctx.Err()
+}
+
+func logICECandidates(log *slog.Logger, local, remote transport.Offer) {
+	if !log.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	summarize := func(offer transport.Offer) []string {
+		var out []string
+		for _, raw := range offer.Candidates {
+			candidate, err := pionice.UnmarshalCandidate(raw)
+			if err == nil {
+				out = append(out, fmt.Sprintf("%s/%s", candidate.Type(), net.JoinHostPort(candidate.Address(), strconv.Itoa(candidate.Port()))))
+			}
+		}
+		return out
+	}
+	// Only endpoint addresses and candidate types are logged. ICE credentials
+	// and encrypted signaling messages never enter diagnostic output.
+	log.Debug("ICE candidates", "local", summarize(local), "remote", summarize(remote))
 }
 
 func pause(ctx context.Context, d time.Duration) bool {

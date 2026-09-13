@@ -147,9 +147,9 @@ func Stop(ctx context.Context, name string) error {
 	if !loaded {
 		return nil
 	}
-	if err := runCommand(ctx, platformCommands, manager, "kill", "SIGTERM", target); err != nil && !isLaunchctlNotLoaded(err) {
-		return fmt.Errorf("wire-connect: stop LaunchDaemon %q: %w", normalizedName, err)
-	}
+	// bootout terminates any running instance and removes the loaded job.
+	// A separate kill fails when localctl has already stopped the process,
+	// although the launchd job still needs to be unloaded.
 	if err := runCommand(ctx, platformCommands, manager, "bootout", target); err != nil && !isLaunchctlNotLoaded(err) {
 		return fmt.Errorf("wire-connect: unload LaunchDaemon %q: %w", normalizedName, err)
 	}

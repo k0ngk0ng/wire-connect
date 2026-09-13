@@ -180,6 +180,8 @@ dump_diagnostics() {
 		ip netns exec "$ns" ip -4 route show >&2 2>&1
 		ip netns exec "$ns" iptables -S >&2 2>&1
 		ip netns exec "$ns" iptables -t nat -S >&2 2>&1
+		ip netns exec "$ns" iptables -nvL FORWARD >&2 2>&1
+		ip netns exec "$ns" iptables -t nat -nvL POSTROUTING >&2 2>&1
 	done
 	echo "--- process stderr (stdout is withheld because it can contain pairing output) ---" >&2
 	for name in "${PROCESS_NAMES[@]}"; do
@@ -410,14 +412,14 @@ test_inner_traffic() {
 run_pair() {
 	local label="$1" code="$2" expected_mode="$3" state_a="$4" state_b="$5" network="$6"
 	STATUS_ENTRIES+=("$label|$NS_CLIENT_A|$state_a" "$label|$NS_CLIENT_B|$state_b")
-	start_process "$label-host" "$NS_CLIENT_A" "$RUN_ROOT/$label-host.stdout" "$RUN_ROOT/$label-host.stderr" "$CONNECT_BIN" "$SERVER_URL" --state-dir "$state_a" --name "$label" --code "$code" --network "$network" --interface "wc$label"
+	start_process "$label-host" "$NS_CLIENT_A" "$RUN_ROOT/$label-host.stdout" "$RUN_ROOT/$label-host.stderr" "$CONNECT_BIN" "$SERVER_URL" --state-dir "$state_a" --name "$label" --code "$code" --network "$network" --interface "wc$label" --verbose
 	local deadline=$((SECONDS + 15))
 	until grep -q '^Pairing code:' "$RUN_ROOT/$label-host.stdout"; do
 		(( SECONDS < deadline )) || fail "$label host did not create its pairing room"
 		kill -0 "${PROCESS_PIDS["$label-host"]}" 2>/dev/null || fail "$label host exited during pairing"
 		sleep 0.1
 	done
-	start_process "$label-guest" "$NS_CLIENT_B" "$RUN_ROOT/$label-guest.stdout" "$RUN_ROOT/$label-guest.stderr" "$CONNECT_BIN" "$SERVER_URL" "$code" --state-dir "$state_b" --name "$label" --network "$network" --interface "wc$label"
+	start_process "$label-guest" "$NS_CLIENT_B" "$RUN_ROOT/$label-guest.stdout" "$RUN_ROOT/$label-guest.stderr" "$CONNECT_BIN" "$SERVER_URL" "$code" --state-dir "$state_b" --name "$label" --network "$network" --interface "wc$label" --verbose
 	wait_for_mode "$label" "$NS_CLIENT_A" "$state_a" "$expected_mode"
 	wait_for_mode "$label" "$NS_CLIENT_B" "$state_b" "$expected_mode"
 }
@@ -485,6 +487,10 @@ DIRECT_A="$RUN_ROOT/direct-a"
 DIRECT_B="$RUN_ROOT/direct-b"
 login_client direct-a "$NS_CLIENT_A" "$DIRECT_A"
 login_client direct-b "$NS_CLIENT_B" "$DIRECT_B"
+
+ns_exec "$NS_CLIENT_A" timeout 12s "$CONNECT_BIN" doctor "$SERVER_URL" --state-dir "$DIRECT_A" >"$RUN_ROOT/direct-doctor.stdout" 2>"$RUN_ROOT/direct-doctor.stderr" || fail "direct scenario prerequisites failed"
+grep -q '^STUN:' "$RUN_ROOT/direct-doctor.stdout" || fail "direct scenario STUN did not observe a NAT mapping"
+cat "$RUN_ROOT/direct-doctor.stdout"
 
 run_pair direct 7k3m-f8q2-h6tw direct "$DIRECT_A" "$DIRECT_B" 10.240.0.0/24
 DIRECT_PEER="$(status_peer direct "$NS_CLIENT_A" "$DIRECT_A")" || fail "could not read direct peer address"

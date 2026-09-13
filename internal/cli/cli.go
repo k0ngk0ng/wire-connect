@@ -47,6 +47,7 @@ Options:
   --background        Install and start an operating-system service
   --network <CIDR>     Virtual address range (default: 100.64.0.0/10)
   --relay-only        Use the encrypted HTTPS relay without UDP probing
+  --verbose           Show connection diagnostics
 
 The standalone wirectl-connect executable accepts the same arguments.
 Creating a virtual interface requires administrator privileges.
@@ -232,6 +233,7 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 	mtu := f.Int("mtu", 1420, "virtual interface MTU")
 	stun := f.String("stun", "", "STUN URL override")
 	relayOnly := f.Bool("relay-only", false, "disable UDP direct connectivity")
+	verbose := f.Bool("verbose", false, "show connection diagnostics")
 	codeFlag := f.String("code", "", "create a room using this pairing code")
 	replace := f.Bool("replace", false, "replace this saved pair after authenticating a new peer")
 	_ = f.Bool("service", false, "internal operating-system service mode")
@@ -333,7 +335,11 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 		return err
 	}
 	defer local.Close()
-	log := slog.New(slog.NewTextHandler(a.errOut, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	level := slog.LevelWarn
+	if *verbose {
+		level = slog.LevelDebug
+	}
+	log := slog.New(slog.NewTextHandler(a.errOut, &slog.HandlerOptions{Level: level}))
 	lastMode := ""
 	return api.Run(runCtx, p, client.RunOptions{Interface: *iface, MTU: *mtu, STUNURL: *stun, RelayOnly: *relayOnly, Log: log, OnStatus: func(next client.Status) {
 		mu.Lock()
