@@ -6,10 +6,10 @@
 
 ```sh
 # 机器 A
-wirectl connect vpn.example.com
+sudo -H wirectl connect vpn.example.com
 
 # 机器 B，输入 A 显示的短码
-wirectl connect vpn.example.com 7k3m-f8q2-h6tw
+sudo -H wirectl connect vpn.example.com 7k3m-f8q2-h6tw
 ```
 
 这是同一个 `wirectl-connect` 可执行程序的插件入口。安装到 `wirectl` 同目录或 `PATH` 后即可使用；也可以直接执行 `wirectl-connect`，参数完全相同。
@@ -34,26 +34,26 @@ gh attestation verify <下载的压缩包> --repo k0ngk0ng/wire-connect
 
 将 `bin/wirectl-connect` 放到 `PATH` 或 `wirectl` 同目录。Windows 使用 `bin/wirectl-connect.exe`，保留同目录的官方 `wintun.dll` 和许可证。不要从第三方 DLL 下载站获取驱动。
 
-创建虚拟网卡和配置路由需要管理员权限。Linux/macOS 在同一个管理员环境中运行登录和连接命令，例如 `sudo wirectl-connect ...`；Windows 使用管理员 PowerShell。凭据按操作系统用户隔离，普通用户和 root 的默认状态目录不同。`--state-dir` 可以显式指定私有状态目录。
+创建虚拟网卡和配置路由需要管理员权限。Linux/macOS 如果以管理员身份运行客户端，请在同一个管理员环境中运行登录、连接和恢复命令；使用 root 的默认状态目录时例如 `sudo -H wirectl connect ...`（直接运行插件则使用 `sudo -H wirectl-connect ...`）。root 创建的状态目录需要继续由 root 使用；也可以让同一个用户为每次命令显式指定同一个私有 `--state-dir`。Windows 使用管理员 PowerShell，下面命令中的 `sudo -H` 前缀应去掉后直接运行。
 
 ## 第一次使用
 
 先在 Linux 公网服务器部署服务，取得初始化时生成的服务器授权令牌。每台客户端只需授权一次，令牌通过交互输入，不写在命令行中：
 
 ```sh
-wirectl connect login vpn.example.com
+sudo -H wirectl connect login vpn.example.com
 ```
 
 然后机器 A 创建配对码：
 
 ```sh
-wirectl connect vpn.example.com
+sudo -H wirectl connect vpn.example.com
 ```
 
 机器 B 输入短码：
 
 ```sh
-wirectl connect vpn.example.com 7k3m-f8q2-h6tw
+sudo -H wirectl connect vpn.example.com 7k3m-f8q2-h6tw
 ```
 
 短码由 12 个易辨认字符组成，分三组显示，不区分大小写；前 4 位是公开的会合标识，后 8 位是配对秘密。有效期 10 分钟，房间只容纳这两台设备。支持 `--code <短码>` 手动创建，但会拒绝明显的弱码。
@@ -79,15 +79,15 @@ curl http://100.93.12.2:8080
 配对身份会保存在私有状态目录，重新连接无需旧短码：
 
 ```sh
-wirectl connect resume
-wirectl connect status
-wirectl connect stop
+sudo -H wirectl connect resume
+sudo -H wirectl connect status
+sudo -H wirectl connect stop
 ```
 
 默认前台运行，`Ctrl+C` 会清理网卡和路由。需要开机恢复时：
 
 ```sh
-wirectl connect resume --background
+sudo -H wirectl connect resume --background
 ```
 
 后台安装需要管理员权限，并要求状态目录受管理员保护。安装器将程序复制到受保护的系统目录，再注册 systemd、launchd 或 Windows Service。它不会悄悄迁移其他用户的私钥。停止会禁用自动启动；重新使用 `resume --background` 启用。
@@ -95,10 +95,10 @@ wirectl connect resume --background
 多个配对使用不同名称：
 
 ```sh
-wirectl connect vpn.example.com --name office
-wirectl connect resume --name office
-wirectl connect status --name office
-wirectl connect stop --name office --uninstall
+sudo -H wirectl connect vpn.example.com --name office
+sudo -H wirectl connect resume --name office
+sudo -H wirectl connect status --name office
+sudo -H wirectl connect stop --name office --uninstall
 ```
 
 `--uninstall` 移除该连接的系统服务和受保护的程序副本，保留配对凭据。默认连接名已配对时，新配对需要指定其他名称或显式使用 `--replace`。
@@ -107,15 +107,18 @@ wirectl connect stop --name office --uninstall
 
 ```sh
 # 与其他 VPN 网段冲突时指定私有虚拟地址池
-wirectl connect vpn.example.com --network 10.203.0.0/16
+sudo -H wirectl connect vpn.example.com --network 10.203.0.0/16
 
 # 限制为 HTTPS 中继
-wirectl connect vpn.example.com --relay-only
+sudo -H wirectl connect vpn.example.com --relay-only
 
 # 降低 MTU，或使用非默认 STUN 端口
-wirectl connect resume --mtu 1280 --stun stun:vpn.example.com:3478
+sudo -H wirectl connect resume --mtu 1280 --stun stun:vpn.example.com:3478
 
-wirectl connect doctor vpn.example.com
+# 输出安全的 ICE 候选和路径诊断
+sudo -H wirectl connect resume --verbose
+
+sudo -H wirectl connect doctor vpn.example.com
 ```
 
 默认地址池为 `100.64.0.0/10`。两端协商未占用地址，添加单个对端 `/32` 主机路由；默认网关与 DNS 保持不变。直连失败自动中继，不保证所有网络都能打洞，也不保证被网络策略禁止的 HTTPS/WebSocket 一定可达。中继增加服务器带宽消耗和延迟。
@@ -123,10 +126,12 @@ wirectl connect doctor vpn.example.com
 HTTPS 控制和中继连接遵循系统代理环境变量。只提供公网 IP 或使用私有 TLS 证书时，在首次登录预先配置通过可信渠道取得的证书指纹：
 
 ```sh
-wirectl connect login https://203.0.113.10 --pin <证书的SHA256指纹>
+sudo -H wirectl connect login https://203.0.113.10 --pin <证书的SHA256指纹>
 ```
 
 指纹不匹配或证书过期时连接会失败；程序不提供跳过全部证书验证的开关。
+
+`--verbose` 只向标准错误输出连接诊断，例如 ICE 候选类型、地址和当前路径；不会输出配对码、ICE 凭据或私钥。
 
 ## Linux 公网服务器
 

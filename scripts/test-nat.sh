@@ -513,9 +513,18 @@ cat "$RUN_ROOT/direct-doctor.stdout"
 
 run_pair direct 7k3m-f8q2-h6tw direct "$DIRECT_A" "$DIRECT_B" 10.240.0.0/24
 DIRECT_PEER="$(status_peer direct "$NS_CLIENT_A" "$DIRECT_A")" || fail "could not read direct peer address"
+# Make relay fallback unavailable during the direct traffic assertions. This
+# proves application packets actually use the hole-punched path, rather than
+# merely observing a transient direct status before a successful relay flow.
+for ns in "$NS_NAT_A" "$NS_NAT_B"; do
+	iptables_ns "$ns" -I FORWARD 1 -i lan0 -o wan0 -p tcp -d 198.18.0.1 --dport 443 -j DROP || fail "could not isolate direct traffic from relay"
+done
 test_inner_traffic direct direct "$NS_CLIENT_A" "$DIRECT_A" "$NS_CLIENT_B" "$DIRECT_PEER"
 stop_process direct-host
 stop_process direct-guest
+for ns in "$NS_NAT_A" "$NS_NAT_B"; do
+	iptables_ns "$ns" -D FORWARD -i lan0 -o wan0 -p tcp -d 198.18.0.1 --dport 443 -j DROP || fail "could not restore server access"
+done
 
 # Insert the drop before the ordinary forwarding rule. TCP control and DERP
 # remain available, while every UDP packet leaving either simulated private

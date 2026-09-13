@@ -7,11 +7,11 @@ Implementation and release qualification are in progress. This file records actu
 | OPAQUE short-code authentication and session encryption | Unit tests, wrong-context and replay tests; root-agent source review |
 | Real encrypted application packets over HTTPS/DERP | `internal/client` integration tests use real WireGuard and a local TLS server, with memory TUN at the OS boundary |
 | Upgrade from relay to UDP direct path | Same integration suite verifies ICE direct mode and further packet transfer |
-| Native TUN/address/route creation and rollback | Passed on Linux amd64, macOS arm64 and Windows amd64 in [CI 34754543771](https://github.com/k0ngk0ng/wire-connect/actions/runs/34754543771); real TUN, address/route setup and cleanup |
-| Windows amd64 service, SCM lifecycle and Administrator-to-LocalSystem Named Pipe | Native CI lifecycle test on an elevated Windows runner |
-| Linux/macOS service installation and lifecycle | Native CI lifecycle test; Unix run uses a root-owned disposable state root because the installer rejects untrusted state-directory ancestors |
+| Native TUN/address/route creation and rollback | Passed for Linux amd64/arm64, macOS arm64 and Windows amd64 in the platform jobs of [CI 34756212350](https://github.com/k0ngk0ng/wire-connect/actions/runs/34756212350); real TUN, address/route setup and cleanup |
+| Windows amd64 service, SCM lifecycle and Administrator-to-LocalSystem Named Pipe | Passed in the elevated Windows lifecycle job of [CI 34756212350](https://github.com/k0ngk0ng/wire-connect/actions/runs/34756212350) |
+| Linux/macOS service installation and lifecycle | Passed in the Linux amd64/arm64 and macOS arm64 lifecycle jobs of [CI 34756212350](https://github.com/k0ngk0ng/wire-connect/actions/runs/34756212350); Unix runs use root-owned disposable state roots because the installer rejects untrusted state-directory ancestors |
 | Server restart and path failure recovery | Client tests cover relay recovery after server restart and surviving direct traffic while the server is offline; transport tests cover actual ICE consent loss and DERP reconnect |
-| Separate NATs, UDP blocked, bulk TCP and fragmented UDP | Disposable namespace tests are a required CI gate; final qualification pending after excluding virtual TUN addresses from ICE candidates |
+| Separate NATs, UDP blocked, bulk TCP and fragmented UDP | Disposable namespace tests remain a required CI gate. NAT qualification is still pending; [CI 34756212350](https://github.com/k0ngk0ng/wire-connect/actions/runs/34756212350) passed the four platform TUN/service jobs while its `nat-linux` gate did not qualify direct mode |
 | Public GitHub repository and release artifacts | Public repository created; Actions release and verified release downloads pending |
 | Independent third-party cryptographic audit | Not performed |
 

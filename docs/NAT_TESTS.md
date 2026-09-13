@@ -19,12 +19,19 @@ STUN on UDP 3478 inside its namespace. The client commands use the standalone
 `wirectl-connect` binary, so the test also exercises the same executable that
 is shipped in the Linux release archive.
 
+The routers silently drop unsolicited WAN UDP in INPUT before conntrack
+confirmation; packets with an established reverse mapping still traverse
+FORWARD. No static port forwarding or permissive inbound FORWARD rule is used.
+
 ## What is covered
 
 The first scenario uses ordinary stateful NAT. Both clients enroll, pair with
 the fixed disposable fixture code, and must report `direct`. An HTTP service
 and a UDP echo service then run behind client B. Client A reaches both services
 through the encrypted WireGuard virtual addresses.
+After direct mode is established, HTTPS access to the server is blocked at
+both NATs throughout these transfers, so relay fallback cannot satisfy the
+direct-path traffic assertions. Server access is restored for the relay case.
 
 Both paths also transfer a 4 MiB TCP response with SHA-256 content verification
 and echo 1372-byte and 8192-byte UDP payloads, covering a near-MTU datagram and
@@ -60,7 +67,7 @@ GOMODCACHE="$PWD/.cache/go-mod" \
 GOTMPDIR="$PWD/.cache/tmp" \
 TMPDIR="$PWD/.cache/tmp" \
 go build -trimpath -buildvcs=false -o .cache/nat/wire-connect-testutil ./cmd/wire-connect-testutil
-sudo env WIRE_CONNECT_NAT_TEST=1 \
+sudo -H env WIRE_CONNECT_NAT_TEST=1 \
   ./scripts/test-nat.sh .cache/nat/wirectl-connect .cache/nat/wire-connect-testutil
 ```
 
@@ -72,7 +79,7 @@ An Ubuntu runner needs the following packages:
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y iproute2 iptables curl openssl coreutils procps
+sudo -H apt-get install -y iproute2 iptables curl openssl coreutils procps tcpdump
 ```
 
 Go is needed only to build the two binaries. No external network is used after
@@ -88,9 +95,10 @@ namespaces; the host's iptables tables and default routes are not flushed or
 modified.
 
 On failure, diagnostics include namespace addresses/routes, namespace-local
-iptables rules and bounded process stderr. Process stdout is withheld because
-pairing output can contain the test fixture code. The enrollment token is
-generated into a mode-0600 temporary file and is never printed.
+iptables rules, bounded process stderr and packet-header captures when
+available. Process stdout is withheld because pairing output can contain the
+test fixture code. The enrollment token is generated into a mode-0600
+temporary file and is never printed.
 
 ## CI evidence
 
