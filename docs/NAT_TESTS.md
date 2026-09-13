@@ -109,5 +109,5 @@ result (or sanitized stderr) as evidence. A green build or a local loopback
 integration test alone is not evidence that either NAT scenario passed.
 
 Both scenarios, including direct traffic with server HTTPS blocked, passed in
-the `nat-linux` job of [CI 34757053195](https://github.com/k0ngk0ng/wire-connect/actions/runs/34757053195).
+the `nat-linux` job of [CI 34757704823](https://github.com/k0ngk0ng/wire-connect/actions/runs/34757704823).
 The release workflow runs this gate again for the tagged commit.
