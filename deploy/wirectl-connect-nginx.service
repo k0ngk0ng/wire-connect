@@ -1,0 +1,41 @@
+[Unit]
+Description=wire-connect behind a TLS reverse proxy
+Documentation=https://github.com/k0ngk0ng/wire-connect
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wire-connect
+Group=wire-connect
+ExecStart=/usr/local/bin/wirectl-connect serve --http --listen 127.0.0.1:8080 --state-dir /var/lib/wire-connect
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+TimeoutStopSec=20s
+UMask=0077
+
+# TLS and certificate renewal are handled by the local reverse proxy.
+CapabilityBoundingSet=
+NoNewPrivileges=true
+
+StateDirectory=wire-connect
+StateDirectoryMode=0700
+ConfigurationDirectory=wire-connect
+ConfigurationDirectoryMode=0700
+ReadWritePaths=/var/lib/wire-connect
+
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

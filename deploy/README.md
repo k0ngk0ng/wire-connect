@@ -59,6 +59,69 @@ sudo ss -lntup | grep -E ':(443|3478)\b'
 sudo journalctl -u wirectl-connect.service -f
 ```
 
+## Nginx TLS termination
+
+When Nginx already owns port 443, it can terminate public TLS and proxy both
+control and DERP WebSockets to a loopback HTTP backend. The backend does not
+need certificate files or access to port 443:
+
+```sh
+wirectl-connect serve --http --listen 127.0.0.1:8080 --state-dir /var/lib/wire-connect
+```
+
+Initialize the service account and state as above, but install
+`deploy/wirectl-connect-nginx.service` as
+`/etc/systemd/system/wirectl-connect.service`. Set its loopback port to an unused
+port, then use the same port in `deploy/nginx.conf`.
+
+`--http` defaults to `127.0.0.1:8080`. Explicit listeners must use a loopback IP
+literal (`127.0.0.1` or `[::1]`, for example). Wildcard, LAN, public, DNS-name and
+zoned listeners are rejected before the server creates state. HTTP mode cannot
+be combined with `--domain`, `--cert` or `--key`. Client connections to remote
+servers still require HTTPS.
+
+For Certbot webroot validation, first enable only the port-80 server block from
+`deploy/nginx.conf`, with the redirect replaced by `return 404;` until the
+certificate exists. Replace `vpn.example.com` with the desired hostname.
+Then create the challenge webroot and request the certificate using your
+existing Certbot account:
+
+```sh
+sudo install -d -m 0755 /var/lib/letsencrypt/wire-connect/.well-known/acme-challenge
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot certonly --webroot -w /var/lib/letsencrypt/wire-connect -d vpn.example.com
+```
+
+Once issued, enable the complete `deploy/nginx.conf` template in Nginx's `http`
+context. Its `map` and WebSocket upgrade headers are required. The HTTP backend
+port must remain bound to loopback; only public TCP 443 and UDP 3478 are needed
+for client connections. TCP 80 remains available for Certbot HTTP-01 renewals.
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now wirectl-connect.service
+sudo nginx -t && sudo systemctl reload nginx
+curl --fail https://vpn.example.com/healthz
+```
+
+Keep Certbot's renewal timer enabled and install a deployment hook which runs
+`nginx -t` followed by `systemctl reload nginx` after this certificate renews.
+The backend needs no restart or certificate copies. Test renewal with
+`certbot renew --cert-name vpn.example.com --dry-run`.
+
+The current backend deliberately does not trust forwarded IP headers. Its IP
+rate limits therefore aggregate clients behind the proxy; device authentication
+and per-device relay limits remain separate. Do not treat this as independent
+per-client source-IP enforcement for a large shared deployment.
+
+`TestWireGuardThroughTLSReverseProxy` verifies pairing, WebSocket relay and
+bidirectional WireGuard payloads through TLS termination. An explicit
+`WIRE_CONNECT_PROXY_TEST_SERVER=https://...` and
+`WIRE_CONNECT_PROXY_TEST_TOKEN_FILE=/private/token-file` also enable deployment
+qualification against an authorized **disposable** server state; the test
+creates two temporary device authorizations and must not be pointed at an
+unrelated server. It uses memory TUN devices and does not change local routes.
+
 ## Client packages
 
 Verify `SHA256SUMS` before unpacking a release. GitHub artifact provenance can

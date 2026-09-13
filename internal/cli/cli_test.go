@@ -5,6 +5,8 @@ import (
 	"context"
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -61,5 +63,40 @@ func TestNamedConnectionsUseIndependentInterfaces(t *testing.T) {
 	}
 	if a != defaultInterface("", "office") {
 		t.Fatal("resuming a named connection must select the same interface")
+	}
+}
+
+func TestServeListenDefaults(t *testing.T) {
+	if got, err := serveListenAddress(true, "", false); err != nil || got != "127.0.0.1:8080" {
+		t.Fatalf("HTTP default listen = %q, %v", got, err)
+	}
+	if got, err := serveListenAddress(false, "", false); err != nil || got != ":443" {
+		t.Fatalf("HTTPS default listen = %q, %v", got, err)
+	}
+	if got, err := serveListenAddress(true, "127.0.0.1:18088", true); err != nil || got != "127.0.0.1:18088" {
+		t.Fatalf("explicit HTTP listen = %q, %v", got, err)
+	}
+}
+
+func TestServeHTTPRejectsExplicitEmptyListen(t *testing.T) {
+	if _, err := serveListenAddress(true, "", true); err == nil {
+		t.Fatal("accepted an explicitly empty HTTP listen address")
+	}
+}
+
+func TestServeInvalidHTTPLeavesNoState(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("server CLI runs on Linux")
+	}
+	for _, listen := range []string{"0.0.0.0:8080", "localhost:8080", ":8080", "192.168.1.1:8080"} {
+		dir := filepath.Join(t.TempDir(), "state")
+		var out, errOut bytes.Buffer
+		err := Run(context.Background(), []string{"serve", "--http", "--listen", listen, "--state-dir", dir, "--init"}, "test", bytes.NewReader(nil), &out, &errOut)
+		if err == nil {
+			t.Fatalf("accepted HTTP listener %q", listen)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("invalid listener %q touched state: %v", listen, err)
+		}
 	}
 }

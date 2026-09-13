@@ -40,11 +40,13 @@ Usage:
   wirectl connect stop                        Stop the connection
   wirectl connect doctor [server]              Check network prerequisites
   wirectl connect serve --domain <hostname>    Run the Linux public server
+  wirectl connect serve --http                Run a local HTTP backend
 
 Options:
   --state-dir <path>   Private credentials and profiles directory
   --name <name>        Saved connection name (default: default)
   --background        Install and start an operating-system service
+  --http              Serve plain HTTP on loopback for a reverse proxy
   --network <CIDR>     Virtual address range (default: 100.64.0.0/10)
   --relay-only        Use the encrypted HTTPS relay without UDP probing
   --verbose           Show connection diagnostics
@@ -488,7 +490,8 @@ func (a app) serve(ctx context.Context, args []string) error {
 		return err
 	}
 	domain := f.String("domain", "", "public hostname for automatic TLS certificates")
-	listen := f.String("listen", ":443", "HTTPS listen address")
+	httpMode := f.Bool("http", false, "serve plain HTTP on loopback for a reverse proxy")
+	listen := f.String("listen", "", "HTTPS or HTTP listen address")
 	stun := f.String("stun-listen", ":3478", "STUN UDP listen address")
 	cert := f.String("cert", "", "TLS certificate file")
 	key := f.String("key", "", "TLS private key file")
@@ -501,6 +504,25 @@ func (a app) serve(ctx context.Context, args []string) error {
 	}
 	if f.NArg() != 0 {
 		return errors.New("serve takes options only")
+	}
+	listenSet := false
+	f.Visit(func(fl *flag.Flag) {
+		if fl.Name == "listen" {
+			listenSet = true
+		}
+	})
+	var listenErr error
+	*listen, listenErr = serveListenAddress(*httpMode, *listen, listenSet)
+	if listenErr != nil {
+		return listenErr
+	}
+	if *httpMode && (*domain != "" || *cert != "" || *key != "") {
+		return errors.New("--http cannot be combined with --domain, --cert, or --key")
+	}
+	if *httpMode {
+		if err := server.ValidateHTTPListen(*listen); err != nil {
+			return err
+		}
 	}
 	s, err := c.store()
 	if err != nil {
@@ -518,7 +540,7 @@ func (a app) serve(ctx context.Context, args []string) error {
 			return errors.New("enrollment token must contain 32-256 characters")
 		}
 	}
-	cfg := server.Config{Domain: *domain, Listen: *listen, STUNListen: *stun, StateDir: s.Dir, CertFile: *cert, KeyFile: *key, EnrollmentToken: token, RelayBytesPerSecond: *relayLimit, MaxRelayConnections: *connections, Log: slog.New(slog.NewJSONHandler(a.errOut, nil))}
+	cfg := server.Config{Domain: *domain, Listen: *listen, HTTP: *httpMode, STUNListen: *stun, StateDir: s.Dir, CertFile: *cert, KeyFile: *key, EnrollmentToken: token, RelayBytesPerSecond: *relayLimit, MaxRelayConnections: *connections, Log: slog.New(slog.NewJSONHandler(a.errOut, nil))}
 	if *initOnly {
 		cfg.EnrollmentOutput = a.out
 		srv, err := server.New(cfg)
@@ -533,4 +555,17 @@ func (a app) serve(ctx context.Context, args []string) error {
 		return errors.New("initialize the server first with serve --init --state-dir <path>; save the enrollment token")
 	}
 	return server.Serve(ctx, cfg)
+}
+
+func serveListenAddress(httpMode bool, listen string, explicitlySet bool) (string, error) {
+	if !explicitlySet {
+		if httpMode {
+			return "127.0.0.1:8080", nil
+		}
+		return ":443", nil
+	}
+	if httpMode && listen == "" {
+		return "", errors.New("--http requires an explicit loopback IP listen address")
+	}
+	return listen, nil
 }

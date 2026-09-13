@@ -153,6 +153,14 @@ wirectl-connect serve --domain vpn.example.com --state-dir /var/lib/wire-connect
 
 域名模式通过 ACME 自动获取并续期证书。已经管理证书时，可以传 `--cert <fullchain.pem> --key <privkey.pem>`。
 
+已有 Nginx 占用 443 并管理证书时，后端使用本机 HTTP：
+
+```sh
+wirectl-connect serve --http --listen 127.0.0.1:8080 --state-dir /var/lib/wire-connect
+```
+
+Nginx 将该域名的 HTTPS 和 WebSocket 请求转发到 `http://127.0.0.1:8080`，客户端仍使用 `https://你的域名`。`--http` 只接受回环 IP 地址，不能绑定公网或内网网卡，也不能与证书或自动 TLS 参数混用。UDP 3478 仍直接对外开放。完整配置见 [Nginx 部署说明](deploy/README.md#nginx-tls-termination)。
+
 服务默认限制中继连接数和每客户端带宽；设备需要先授权，再登记有时效的中继密钥，不能作为匿名开放中继使用。默认每客户端中继限速 10 MiB/s，可通过 `--relay-bytes-per-second` 调整。
 
 生产部署使用 [systemd 模板与说明](deploy/README.md)，由低权限服务账号运行，仅保留绑定低端口的能力。服务启动输出结构化日志，`GET /healthz` 提供存活检查。备份整个私有状态目录，以保留设备授权、配对记录和证书。

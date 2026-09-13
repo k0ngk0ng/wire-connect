@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ import (
 type Config struct {
 	Domain              string
 	Listen              string
+	HTTP                bool
 	STUNListen          string
 	StateDir            string
 	CertFile            string
@@ -54,6 +56,11 @@ type Server struct {
 }
 
 func New(cfg Config) (*Server, error) {
+	var err error
+	cfg, err = normalizeConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
@@ -180,17 +187,21 @@ func (s *Server) Close() error {
 }
 
 func Serve(ctx context.Context, cfg Config) error {
-	if cfg.Listen == "" {
-		cfg.Listen = ":443"
+	var err error
+	cfg, err = normalizeConfig(cfg)
+	if err != nil {
+		return err
 	}
 	if cfg.STUNListen == "" {
 		cfg.STUNListen = ":3478"
 	}
-	if cfg.Domain == "" && (cfg.CertFile == "" || cfg.KeyFile == "") {
-		return errors.New("serve requires --domain for automatic TLS, or both --cert and --key")
-	}
-	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
-		return errors.New("--cert and --key must be supplied together")
+	if !cfg.HTTP {
+		if cfg.Domain == "" && (cfg.CertFile == "" || cfg.KeyFile == "") {
+			return errors.New("serve requires --domain for automatic TLS, or both --cert and --key")
+		}
+		if (cfg.CertFile == "") != (cfg.KeyFile == "") {
+			return errors.New("--cert and --key must be supplied together")
+		}
 	}
 	s, err := New(cfg)
 	if err != nil {
@@ -206,19 +217,33 @@ func Serve(ctx context.Context, cfg Config) error {
 	defer stopSTUN()
 	go func() { <-stunCtx.Done(); udp.Close() }()
 	go ServeSTUN(stunCtx, udp)
-	httpServer := &http.Server{Addr: cfg.Listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 << 10, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
-	if cfg.CertFile == "" {
-		m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(cfg.Domain), Cache: autocert.DirCache(filepath.Join(cfg.StateDir, "certificates"))}
-		httpServer.TLSConfig = m.TLSConfig()
-		httpServer.TLSConfig.MinVersion = tls.VersionTLS12
+	httpServer := &http.Server{Addr: cfg.Listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 16 << 10}
+	if !cfg.HTTP {
+		httpServer.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		if cfg.CertFile == "" {
+			m := &autocert.Manager{Prompt: autocert.AcceptTOS, HostPolicy: autocert.HostWhitelist(cfg.Domain), Cache: autocert.DirCache(filepath.Join(cfg.StateDir, "certificates"))}
+			httpServer.TLSConfig = m.TLSConfig()
+			httpServer.TLSConfig.MinVersion = tls.VersionTLS12
+		}
 	}
 	listen, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
+		if cfg.HTTP {
+			return fmt.Errorf("listen HTTP: %w", err)
+		}
 		return fmt.Errorf("listen HTTPS: %w", err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- httpServer.ServeTLS(listen, cfg.CertFile, cfg.KeyFile) }()
-	s.cfg.Log.Info("server listening", "https", listen.Addr().String(), "stun", udp.LocalAddr().String())
+	if cfg.HTTP {
+		go func() { done <- httpServer.Serve(listen) }()
+	} else {
+		go func() { done <- httpServer.ServeTLS(listen, cfg.CertFile, cfg.KeyFile) }()
+	}
+	listenerScheme := "https"
+	if cfg.HTTP {
+		listenerScheme = "http"
+	}
+	s.cfg.Log.Info("server listening", "listener", listenerScheme+"://"+listen.Addr().String(), "stun", udp.LocalAddr().String())
 	select {
 	case err := <-done:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -234,6 +259,44 @@ func Serve(ctx context.Context, cfg Config) error {
 		httpServer.Close()
 	}
 	return err
+}
+
+const (
+	defaultHTTPListen  = "127.0.0.1:8080"
+	defaultHTTPSListen = ":443"
+)
+
+func normalizeConfig(cfg Config) (Config, error) {
+	if cfg.HTTP {
+		if cfg.Domain != "" || cfg.CertFile != "" || cfg.KeyFile != "" {
+			return cfg, errors.New("--http cannot be combined with --domain, --cert, or --key")
+		}
+		if cfg.Listen == "" {
+			cfg.Listen = defaultHTTPListen
+		}
+		if err := ValidateHTTPListen(cfg.Listen); err != nil {
+			return cfg, err
+		}
+		return cfg, nil
+	}
+	if cfg.Listen == "" {
+		cfg.Listen = defaultHTTPSListen
+	}
+	return cfg, nil
+}
+
+// ValidateHTTPListen allows a plaintext backend only on an explicit loopback
+// IP. CLI callers also use it before initializing their state directory.
+func ValidateHTTPListen(listen string) error {
+	addr, err := netip.ParseAddrPort(listen)
+	if err != nil || addr.Addr().Zone() != "" {
+		return errors.New("HTTP listen address must be a loopback IP literal with a port")
+	}
+	ip := addr.Addr()
+	if ip != netip.MustParseAddr("::1") && !(ip.Is4() && ip.IsLoopback()) {
+		return errors.New("HTTP listen address must be a loopback IP literal with a port")
+	}
+	return nil
 }
 
 // ServeSTUN answers only valid binding requests. A global token bucket bounds
