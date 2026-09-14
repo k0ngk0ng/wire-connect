@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,38 @@ func TestInvalidFlagsFail(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if err := Run(context.Background(), []string{"vpn.example.com", "--does-not-exist"}, "test", bytes.NewReader(nil), &out, &errOut); err == nil {
 		t.Fatal("accepted unknown flag")
+	}
+}
+
+func TestExplicitStateDirWorksWithoutUserConfigEnvironment(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux systemd services may not provide HOME or XDG_CONFIG_HOME")
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := filepath.Join(t.TempDir(), "wire-connect")
+	var out, errOut bytes.Buffer
+	if err := Run(context.Background(), []string{"status", "--state-dir", dir}, "test", bytes.NewReader(nil), &out, &errOut); err != nil {
+		t.Fatalf("explicit state directory failed without user config environment: %v", err)
+	}
+	if !strings.Contains(out.String(), "No saved connections") {
+		t.Fatalf("status did not use explicit state directory: %s", out.String())
+	}
+}
+
+func TestImplicitStateDirStillReportsMissingUserConfig(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux systemd services may not provide HOME or XDG_CONFIG_HOME")
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	var out, errOut bytes.Buffer
+	err := Run(context.Background(), []string{"status"}, "test", bytes.NewReader(nil), &out, &errOut)
+	if err == nil {
+		t.Fatal("implicit state directory unexpectedly succeeded without user config environment")
+	}
+	if !strings.Contains(err.Error(), "neither $XDG_CONFIG_HOME nor $HOME are defined") {
+		t.Fatalf("implicit state directory error = %v; want missing user config diagnostic", err)
 	}
 }
 

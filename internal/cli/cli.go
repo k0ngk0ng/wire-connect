@@ -124,14 +124,14 @@ func Run(ctx context.Context, args []string, version string, in io.Reader, out, 
 type common struct{ dir, name string }
 
 func (a app) flags(command string) (*flag.FlagSet, *common, error) {
-	dir, err := config.DefaultDir()
-	if err != nil {
-		return nil, nil, err
-	}
 	f := flag.NewFlagSet(command, flag.ContinueOnError)
 	f.SetOutput(a.errOut)
 	c := &common{}
-	f.StringVar(&c.dir, "state-dir", dir, "private state directory")
+	// Resolve the implicit configuration directory only after parsing. Service
+	// units always pass --state-dir, and their minimal systemd environment may
+	// intentionally omit HOME/XDG_CONFIG_HOME. Resolving the default here
+	// would reject those valid explicit paths before the flag is even seen.
+	f.StringVar(&c.dir, "state-dir", "", "private state directory")
 	f.StringVar(&c.name, "name", "default", "saved connection name")
 	return f, c, nil
 }
@@ -142,7 +142,11 @@ func (c *common) store() (config.Store, error) {
 	if !profileName.MatchString(c.name) {
 		return config.Store{}, errors.New("name must be 1-32 lowercase letters, digits or hyphens, starting with a letter")
 	}
-	dir, err := filepath.Abs(c.dir)
+	dir, err := c.stateDir()
+	if err != nil {
+		return config.Store{}, err
+	}
+	dir, err = filepath.Abs(dir)
 	if err != nil {
 		return config.Store{}, err
 	}
@@ -154,6 +158,18 @@ func (c *common) store() (config.Store, error) {
 	// state directory, so services and local IPC use the same canonical path.
 	s.Dir, err = filepath.EvalSymlinks(dir)
 	return s, err
+}
+
+// stateDir resolves the command's state directory after flags have been
+// parsed. An explicitly supplied path is usable even when the process has no
+// HOME or XDG_CONFIG_HOME, which is common for systemd service environments.
+// The implicit path retains config.DefaultDir's native error when the user
+// environment cannot provide one.
+func (c *common) stateDir() (string, error) {
+	if c.dir != "" {
+		return c.dir, nil
+	}
+	return config.DefaultDir()
 }
 
 // parse accepts options before or after the two positional arguments without

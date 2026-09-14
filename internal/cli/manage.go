@@ -242,7 +242,10 @@ func (a app) refreshUpdate(ctx context.Context, args []string) error {
 		}
 		return nil
 	}
-	dir := c.dir
+	dir, err := c.stateDir()
+	if err != nil {
+		return err
+	}
 	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
 		return refreshHelper()
 	} else if err != nil {

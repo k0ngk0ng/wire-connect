@@ -94,25 +94,16 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
-          Saved connections now have a complete management flow:
-            list (alias for status)
-            stop --name NAME (keep the saved pair)
-            resume --name NAME
-            delete --name NAME (alias: remove)
+          Fix Linux background services failing to start when systemd does not
+          provide HOME or XDG_CONFIG_HOME. Explicit --state-dir paths now work
+          without those variables; the default configuration directory is only
+          resolved when it is actually needed. Update refresh uses the same
+          deferred directory resolution.
 
-          delete stops the selected connection, removes its background service,
-          confirms that its local control endpoint has closed, and removes only
-          that connection's saved pair. Other connections, server login credentials,
-          the shared network helper and the peer device's profile are retained.
-          If stopping cannot be confirmed, the saved pair is retained.
-
-          Stopped connections now show a gray STOPPED block with resume/delete
-          commands and a separate Stopped count, instead of a missing-socket error.
-          Service state and platform-specific IPC errors distinguish stopped
-          connections from unavailable ones. Single-connection JSON reports
-          running:false and mode:stopped for a confirmed stopped saved connection.
-          Repeated stop calls are supported, and help and shell completion include
-          the new management commands.
+          This fixes the repeated service restart / missing local control socket
+          failure after successful pairing. Saved pairs do not need to be recreated.
+          Regression tests cover explicit and implicit state directories without
+          a user configuration environment.
 
           Pair two devices with a short code and access the peer through its
           WireGuard virtual IP. ICE/STUN prefers UDP direct connectivity;
