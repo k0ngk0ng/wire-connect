@@ -77,7 +77,7 @@ _wirectl_connect_candidates() {
         connect|resume) options="$common --background --foreground --network --interface --mtu --stun --relay-only --verbose --code --replace" ;;
         login) options="$common --pin" ;;
         stop) options="$common --uninstall" ;;
-        status) options="$common --watch --json" ;;
+        status) options="$common --watch --json --all" ;;
         doctor) options="$common" ;;
         update) options='--version --archive --checksums --manifest --state-dir --help' ;;
         serve) options="$common --domain --http --listen --stun-listen --cert --key --enrollment-token-file --init --max-relay-connections --relay-bytes-per-second" ;;

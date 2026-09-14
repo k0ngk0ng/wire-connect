@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -41,7 +40,7 @@ Usage:
   wirectl connect <server>                     Create a short pairing code
   wirectl connect <server> <code>              Join the other device
   wirectl connect resume                       Reconnect a saved pair
-  wirectl connect status                      Show connection state
+  wirectl connect status                      Show all saved connections
   wirectl connect stop                        Stop the connection
   wirectl connect doctor [server]              Check network prerequisites
   wirectl connect serve --domain <hostname>    Run the Linux public server
@@ -389,7 +388,7 @@ func (a app) connect(ctx context.Context, args []string, resume bool) error {
 		status = next
 		mu.Unlock()
 		if !next.LastHandshake.IsZero() && next.Mode != lastMode {
-			fmt.Fprintf(a.out, "Connected · %s · %s ↔ %s\n", next.Mode, next.LocalIP, next.PeerIP)
+			printConnections(a.out, []connectionStatus{{Name: c.name, Server: p.Server, Status: next}}, statusColor(a.out))
 			lastMode = next.Mode
 		}
 	}})
@@ -428,60 +427,6 @@ func authorized(s config.Store, server string) (*client.Client, error) {
 		return nil, fmt.Errorf("server is not authorized; run: wirectl connect login %s", u.String())
 	}
 	return client.New(u.String(), cred)
-}
-
-func (a app) status(ctx context.Context, args []string) error {
-	f, c, err := a.flags("status")
-	if err != nil {
-		return err
-	}
-	watch := f.Bool("watch", false, "refresh connection status once per second")
-	asJSON := f.Bool("json", false, "print machine-readable status (JSON lines when watching)")
-	if err := parse(f, args); err != nil {
-		return err
-	}
-	if f.NArg() != 0 {
-		return errors.New("status takes no positional arguments")
-	}
-	s, err := c.store()
-	if err != nil {
-		return err
-	}
-	for {
-		var st client.Status
-		if err := localctl.Status(ctx, s.Dir, c.name, &st); err != nil {
-			return fmt.Errorf("connection is not running for this user; run wirectl connect resume: %w", err)
-		}
-		if *asJSON {
-			if err := json.NewEncoder(a.out).Encode(st); err != nil {
-				return err
-			}
-		} else {
-			printStatus(a.out, st)
-		}
-		if !*watch {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
-}
-
-func printStatus(out io.Writer, st client.Status) {
-	fmt.Fprintf(out, "%s · %s ↔ %s\n", st.Mode, st.LocalIP, st.PeerIP)
-	if st.DirectRemote != "" {
-		fmt.Fprintf(out, "Direct UDP endpoint: %s\n", st.DirectRemote)
-	}
-	if !st.ModeSince.IsZero() {
-		fmt.Fprintf(out, "Path since %s (%s)\n", st.ModeSince.Format(time.RFC3339), st.ModeReason)
-	}
-	fmt.Fprintf(out, "Direct: sent %d bytes · received %d bytes\nRelay:  sent %d bytes · received %d bytes\n", st.DirectSent, st.DirectReceived, st.RelaySent, st.RelayReceived)
-	if !st.LastHandshake.IsZero() {
-		fmt.Fprintf(out, "Last WireGuard handshake: %s\n", st.LastHandshake.Format(time.RFC3339))
-	}
 }
 
 func (a app) stop(ctx context.Context, args []string) error {

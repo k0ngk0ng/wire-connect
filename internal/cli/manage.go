@@ -146,8 +146,9 @@ func (a app) waitBackground(ctx context.Context, s config.Store, name string) er
 	for {
 		var st client.Status
 		if err := localctl.Status(waitCtx, s.Dir, name, &st); err == nil && st.Running && !st.LastHandshake.IsZero() {
-			fmt.Fprintf(a.out, "Connected in background · %s · %s ↔ %s\n", st.Mode, st.LocalIP, st.PeerIP)
-			fmt.Fprintln(a.out, "You may close this terminal. Use: wirectl connect status / stop")
+			fmt.Fprintln(a.out, "Connected in background")
+			printConnections(a.out, []connectionStatus{{Name: name, Status: st}}, statusColor(a.out))
+			fmt.Fprintf(a.out, "You may close this terminal.\n  Status: wirectl connect status\n  Stop:   wirectl connect stop --name %s\n", name)
 			return nil
 		}
 		select {

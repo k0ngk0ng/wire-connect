@@ -198,7 +198,7 @@ sudo -H wirectl connect resume
 
 ## 查看路径和流量
 
-`status` 默认只读取一次当前账号和连接名的状态：
+`status` 默认列出当前账号状态目录中的所有已保存连接，顶部汇总连接数和 Direct / Relay / Other 数量，每条连接单独分块。使用 `--name office` 可只看指定连接：
 
 ```sh
 wirectl connect status
@@ -210,13 +210,16 @@ wirectl connect status
 wirectl connect status --watch
 ```
 
-人类可读输出包含当前路径（`direct` 或 `relay`）、双方虚拟 IP、直连对端 UDP endpoint（如果已选择直连）、路径开始时间和原因、直连/中继分别的发送与接收字节数，以及最近一次 WireGuard handshake 时间。`ModeReason` 常见值为 `direct_selected`、`relay_connected` 和 `direct_lost`。handshake 字段表示最近一次观察到的握手时间，不是对端当前持续健康的保证；需要持续观察请使用 `--watch`。
+终端中直连 `[DIRECT]` 显示绿色，中转 `[RELAY]` 显示黄色，无法读取状态 `[UNAVAILABLE]` 和已关闭 `[CLOSED]` 显示红色。`Other` 包括等待路径、已关闭或状态不可用的连接；不会根据旧流量推断当前路径。输出包含双方虚拟 IP、当前 UDP endpoint、本地时区时间和易读流量单位。直连/中转流量是进程启动以来的累计值，包含历史路径，不代表同时使用两条链路。未运行的已保存连接仍会列出。
 
-脚本或监控使用 `--json`。单次查询输出一个 JSON 对象；与 `--watch` 一起使用时每秒输出一行 JSON，便于逐行采集：
+`--watch` 在交互终端原地刷新，退出后恢复原屏幕；重定向时逐次追加快照。重定向输出、`TERM=dumb` 或设置 `NO_COLOR` 时不输出颜色。handshake 表示最近一次观察到的握手时间，不保证对端持续健康。
+
+脚本或监控使用 `--json`，兼容原有行为：默认只查询 `default`（或 `--name` 指定的连接），单次输出一个原有格式的 JSON 对象。`--all --json` 输出所有已保存连接的数组，每项包含 `name`、可选 `server`、`status` 和状态读取失败时的 `error`；空目录输出 `[]`。`--all` 与 `--name` 不能同时使用。与 `--watch` 一起使用时每次快照输出一行 JSON：
 
 ```sh
 wirectl connect status --json
 wirectl connect status --watch --json
+wirectl connect status --all --json
 
 # 例如只保留路径、endpoint、计数和 handshake 证据
 wirectl connect status --json | jq '{mode, direct_remote, direct_sent, direct_received, relay_sent, relay_received, mode_reason, last_handshake, updated}'

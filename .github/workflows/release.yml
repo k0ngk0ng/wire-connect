@@ -94,18 +94,19 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
-          Windows installations now resolve Scoop directory junctions through
-          the filesystem when locating updates and the network helper source.
+          Connection status now shows all saved connections in separate blocks,
+          with a summary of direct, relay and other states. Terminal colors make
+          the current path stand out, and stopped or unavailable profiles stay visible.
+          Use status --name NAME to inspect one connection.
 
-          Homebrew and Scoop installations now direct updates to their package
-          manager, preserving managed files. Standalone updates remain supported.
+          Direct and relay traffic totals are labeled as cumulative history,
+          with readable units and local timestamps. status --watch refreshes in
+          place and restores the terminal when closed. Background connection
+          confirmations use the same layout and show a name-specific stop command.
 
-          Connect and resume now keep the connection in the background by default.
-          Run setup once to authorize a network helper, then use your ordinary
-          account for daily commands. Use --foreground for a temporary session.
-          status --watch shows the direct UDP endpoint, independent direct/relay
-          byte counters and the last WireGuard handshake; Ctrl+C only closes the view.
-          update supports online releases and verified offline archives.
+          Existing status --json output remains compatible. Use status --all --json
+          for an array of named connections. Redirected output stays free of colors;
+          NO_COLOR and TERM=dumb are respected.
 
           Pair two devices with a short code and access the peer through its
           WireGuard virtual IP. ICE/STUN prefers UDP direct connectivity;
