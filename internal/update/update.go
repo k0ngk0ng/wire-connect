@@ -27,6 +27,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/k0ngk0ng/wire-connect/internal/installpath"
 )
 
 const (
@@ -1453,7 +1455,7 @@ func executablePath(override string) (string, error) {
 		return "", fmt.Errorf("wire-connect: resolve current executable: %w", err)
 	}
 	abs = filepath.Clean(abs)
-	resolved, err := filepath.EvalSymlinks(abs)
+	resolved, err := installpath.Resolve(abs)
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: resolve executable symlink: %w", err)
 	}

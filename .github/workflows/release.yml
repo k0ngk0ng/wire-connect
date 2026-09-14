@@ -94,6 +94,9 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
+          Windows installations now resolve Scoop directory junctions through
+          the filesystem when locating updates and the network helper source.
+
           Homebrew and Scoop installations now direct updates to their package
           manager, preserving managed files. Standalone updates remain supported.
 

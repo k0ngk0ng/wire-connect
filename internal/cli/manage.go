@@ -8,12 +8,12 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/k0ngk0ng/wire-connect/internal/client"
 	"github.com/k0ngk0ng/wire-connect/internal/config"
+	"github.com/k0ngk0ng/wire-connect/internal/installpath"
 	"github.com/k0ngk0ng/wire-connect/internal/localctl"
 	"github.com/k0ngk0ng/wire-connect/internal/nethelper"
 	"github.com/k0ngk0ng/wire-connect/internal/netsetup"
@@ -29,7 +29,7 @@ func currentExecutable() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(p)
+	return installpath.Resolve(p)
 }
 func (a app) ensureNetwork(ctx context.Context) error {
 	err := platform.Check(ctx)

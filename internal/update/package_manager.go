@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/k0ngk0ng/wire-connect/internal/installpath"
 )
 
 const (
@@ -33,7 +35,7 @@ func detectPackageManager(executable string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: resolve executable for package manager detection: %w", err)
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(abs))
+	resolved, err := installpath.Resolve(filepath.Clean(abs))
 	if err != nil {
 		return "", fmt.Errorf("wire-connect: resolve executable for package manager detection: %w", err)
 	}
