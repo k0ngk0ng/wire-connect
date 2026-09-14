@@ -168,3 +168,42 @@ func TestStoreRefusesForeignOwner(t *testing.T) {
 		t.Fatal("accepted a private directory owned by another user")
 	}
 }
+
+func TestRemoveKeepsOtherStateAndRejectsUnsafeTargets(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), "state")}
+	for _, name := range []string{"profile-office", "credentials"} {
+		if err := s.Write(name, map[string]string{"key": "keep"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Remove("profile-office"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove("profile-office"); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := s.Read("credentials", &got); err != nil || got["key"] != "keep" {
+		t.Fatal(got, err)
+	}
+	if err := s.Remove("../credentials"); err == nil {
+		t.Fatal("accepted traversal")
+	}
+	if err := os.Mkdir(filepath.Join(s.Dir, "directory.json"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove("directory"); err == nil {
+		t.Fatal("removed directory")
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(filepath.Join(s.Dir, "credentials.json"), filepath.Join(s.Dir, "link.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Remove("link"); err == nil {
+			t.Fatal("accepted symlink")
+		}
+		if err := s.Read("credentials", &got); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

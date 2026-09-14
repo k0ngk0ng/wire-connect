@@ -94,19 +94,25 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
-          Connection status now shows all saved connections in separate blocks,
-          with a summary of direct, relay and other states. Terminal colors make
-          the current path stand out, and stopped or unavailable profiles stay visible.
-          Use status --name NAME to inspect one connection.
+          Saved connections now have a complete management flow:
+            list (alias for status)
+            stop --name NAME (keep the saved pair)
+            resume --name NAME
+            delete --name NAME (alias: remove)
 
-          Direct and relay traffic totals are labeled as cumulative history,
-          with readable units and local timestamps. status --watch refreshes in
-          place and restores the terminal when closed. Background connection
-          confirmations use the same layout and show a name-specific stop command.
+          delete stops the selected connection, removes its background service,
+          confirms that its local control endpoint has closed, and removes only
+          that connection's saved pair. Other connections, server login credentials,
+          the shared network helper and the peer device's profile are retained.
+          If stopping cannot be confirmed, the saved pair is retained.
 
-          Existing status --json output remains compatible. Use status --all --json
-          for an array of named connections. Redirected output stays free of colors;
-          NO_COLOR and TERM=dumb are respected.
+          Stopped connections now show a gray STOPPED block with resume/delete
+          commands and a separate Stopped count, instead of a missing-socket error.
+          Service state and platform-specific IPC errors distinguish stopped
+          connections from unavailable ones. Single-connection JSON reports
+          running:false and mode:stopped for a confirmed stopped saved connection.
+          Repeated stop calls are supported, and help and shell completion include
+          the new management commands.
 
           Pair two devices with a short code and access the peer through its
           WireGuard virtual IP. ICE/STUN prefers UDP direct connectivity;

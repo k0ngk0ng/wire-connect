@@ -40,8 +40,9 @@ Usage:
   wirectl connect <server>                     Create a short pairing code
   wirectl connect <server> <code>              Join the other device
   wirectl connect resume                       Reconnect a saved pair
-  wirectl connect status                      Show all saved connections
-  wirectl connect stop                        Stop the connection
+  wirectl connect status                      Show all saved connections (alias: list)
+  wirectl connect stop                        Stop a connection; keep its saved pair
+  wirectl connect delete --name <name>         Stop and delete a saved connection (alias: remove)
   wirectl connect doctor [server]              Check network prerequisites
   wirectl connect serve --domain <hostname>    Run the Linux public server
   wirectl connect serve --http                Run a local HTTP backend
@@ -101,10 +102,12 @@ func Run(ctx context.Context, args []string, version string, in io.Reader, out, 
 		err = a.login(ctx, args[1:])
 	case "serve":
 		err = a.serve(ctx, args[1:])
-	case "status":
+	case "status", "list":
 		err = a.status(ctx, args[1:])
 	case "stop":
 		err = a.stop(ctx, args[1:])
+	case "delete", "remove":
+		err = a.deleteConnection(ctx, args[1:])
 	case "doctor":
 		err = a.doctor(ctx, args[1:])
 	case "resume":
@@ -445,15 +448,10 @@ func (a app) stop(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ipcErr := localctl.Stop(ctx, s.Dir, c.name)
-	serviceErr := stopClient(ctx, c.name, *remove)
-	if serviceErr != nil && !errors.Is(serviceErr, service.ErrNotInstalled) {
-		return serviceErr
+	if err := nativeConnectionLifecycle().stopAndWait(ctx, s, c.name, *remove); err != nil {
+		return err
 	}
-	if ipcErr != nil && serviceErr != nil {
-		return errors.Join(ipcErr, serviceErr)
-	}
-	fmt.Fprintln(a.out, "Stopped.")
+	fmt.Fprintf(a.out, "Stopped connection %s. Saved pair retained.\n  Resume: wirectl connect resume --name %s\n  Delete: wirectl connect delete --name %s\n", c.name, c.name, c.name)
 	return nil
 }
 

@@ -130,7 +130,7 @@ Paired · local 100.93.12.1 · peer 100.93.12.2
 Connected in background
 
 WIRE CONNECT
-Connections: 1 | Direct: 1 | Relay: 0 | Other: 0
+Connections: 1 | Direct: 1 | Relay: 0 | Stopped: 0 | Other: 0
 
 ────────────────────────────────────────
 Connection: default [DIRECT]
@@ -205,9 +205,24 @@ sudo -H wirectl connect resume
 
 `sudo -H` 只适用于选择 root 工作流的场景；普通用户完成 setup 后，日常命令应直接使用当前账号。无论采用哪种方式，都要让同一个账号执行 `login`、配对、恢复和状态管理，否则会看到“未授权”或“连接未运行”。
 
+## 管理已保存连接
+
+各命令默认操作 `default`，用 `--name NAME` 指定其他连接；`status` 和 `list` 默认列出当前账号的全部已保存连接。
+
+| 操作 | 命令 | 配对记录 |
+|---|---|---|
+| 查看全部 | `wirectl connect list`（等同于 `status`） | 保留 |
+| 停止指定连接 | `wirectl connect stop --name office` | 保留，可恢复 |
+| 恢复指定连接 | `wirectl connect resume --name office` | 使用原配对 |
+| 停止并删除指定连接 | `wirectl connect delete --name office` | 删除，需重新配对 |
+
+`delete` 也可以写成 `remove`。它先停止连接并卸载该连接的后台服务，确认本地连接进程已经退出后，才删除本机的配对文件。如果停止或状态确认失败，保留配对记录并报错。其他连接、服务器登录凭据、共享网络 helper 和对方设备上的记录保持不变。删除后该连接不再出现在列表中；需要再次使用时重新执行配对命令。删除不存在的配对会提示名称不存在，不操作其他服务。
+
+`stop` 可以重复执行。已停止的连接显示灰色 `[STOPPED]` 和恢复/删除命令，不再显示缺少 socket 的底层报错；`stop --uninstall` 只额外移除后台服务，仍保留配对。真正的权限错误、服务状态无法确定或 IPC 异常仍显示 `[UNAVAILABLE]`，不会误报为已停止。
+
 ## 查看路径和流量
 
-`status` 默认列出当前账号状态目录中的所有已保存连接，顶部汇总连接数和 Direct / Relay / Other 数量，每条连接单独分块。使用 `--name office` 可只看指定连接：
+`status` 默认列出当前账号状态目录中的所有已保存连接，顶部汇总连接数和 Direct / Relay / Stopped / Other 数量，每条连接单独分块。使用 `--name office` 可只看指定连接：
 
 ```sh
 wirectl connect status
@@ -219,7 +234,7 @@ wirectl connect status
 wirectl connect status --watch
 ```
 
-终端中直连 `[DIRECT]` 显示绿色，中转 `[RELAY]` 显示黄色，无法读取状态 `[UNAVAILABLE]` 和已关闭 `[CLOSED]` 显示红色。`Other` 包括等待路径、已关闭或状态不可用的连接；不会根据旧流量推断当前路径。输出包含双方虚拟 IP、当前 UDP endpoint、本地时区时间和易读流量单位。直连/中转流量是进程启动以来的累计值，包含历史路径，不代表同时使用两条链路。未运行的已保存连接仍会列出。
+终端中直连 `[DIRECT]` 显示绿色，中转 `[RELAY]` 显示黄色，无法读取状态 `[UNAVAILABLE]` 和已关闭 `[CLOSED]` 显示红色。`Stopped` 单独统计已停止连接；`Other` 包括等待路径、已关闭或状态不可用的连接；不会根据旧流量推断当前路径。输出包含双方虚拟 IP、当前 UDP endpoint、本地时区时间和易读流量单位。直连/中转流量是进程启动以来的累计值，包含历史路径，不代表同时使用两条链路。未运行的已保存连接仍会列出。
 
 `--watch` 在交互终端原地刷新，退出后恢复原屏幕；重定向时逐次追加快照。重定向输出、`TERM=dumb` 或设置 `NO_COLOR` 时不输出颜色。handshake 表示最近一次观察到的握手时间，不保证对端持续健康。
 

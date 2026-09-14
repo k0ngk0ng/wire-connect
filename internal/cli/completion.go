@@ -34,7 +34,7 @@ _wirectl_connect_candidates() {
     (( count )) || return 0
     current="${args[count-1]}"
     case "${args[0]}" in
-        login|resume|status|stop|doctor|serve|completion|setup|update|help|version)
+        login|resume|status|list|stop|delete|remove|doctor|serve|completion|setup|update|help|version)
             command="${args[0]}"; start=1 ;;
     esac
     # A command is selected only in the first position, as in the actual CLI.
@@ -77,7 +77,8 @@ _wirectl_connect_candidates() {
         connect|resume) options="$common --background --foreground --network --interface --mtu --stun --relay-only --verbose --code --replace" ;;
         login) options="$common --pin" ;;
         stop) options="$common --uninstall" ;;
-        status) options="$common --watch --json --all" ;;
+        status|list) options="$common --watch --json --all" ;;
+        delete|remove) options="$common" ;;
         doctor) options="$common" ;;
         update) options='--version --archive --checksums --manifest --state-dir --help' ;;
         serve) options="$common --domain --http --listen --stun-listen --cert --key --enrollment-token-file --init --max-relay-connections --relay-bytes-per-second" ;;
@@ -86,7 +87,7 @@ _wirectl_connect_candidates() {
     if [[ "$current" == -* ]]; then
         [[ "$command" == completion ]] && options=''
     elif (( count == 1 )); then
-        options='login resume status stop doctor serve completion setup update help version'
+        options='login resume status list stop delete remove doctor serve completion setup update help version'
     elif [[ "$command" != completion || "$count" != 2 ]]; then
         options=''
     fi

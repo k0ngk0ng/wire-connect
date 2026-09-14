@@ -214,3 +214,11 @@ func unixFileID(info os.FileInfo) [2]uint64 {
 func dialEndpoint(ctx context.Context, dir, name string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "unix", endpointPath(dir, name))
 }
+
+// isNotRunningError only recognizes endpoint errors that prove there is no
+// local control server to answer the request.  In particular, a permission
+// error, malformed socket, or timeout must remain an unavailable endpoint so
+// status can show the underlying diagnostic instead of claiming STOPPED.
+func isNotRunningError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/k0ngk0ng/wire-connect/internal/client"
 	"github.com/k0ngk0ng/wire-connect/internal/config"
 	"github.com/k0ngk0ng/wire-connect/internal/localctl"
+	"github.com/k0ngk0ng/wire-connect/internal/service"
 	"golang.org/x/term"
 )
 
@@ -24,6 +25,13 @@ type connectionStatus struct {
 	Status client.Status `json:"status"`
 	Error  string        `json:"error,omitempty"`
 }
+
+// statusServiceStatus is a seam for status tests and keeps the service
+// manager query in one place. A missing local endpoint is only STOPPED when
+// the native service manager independently reports an inactive state. This
+// avoids showing a just-starting service as stopped while its IPC endpoint is
+// still being created.
+var statusServiceStatus = clientServiceStatus
 
 func (a app) status(ctx context.Context, args []string) error {
 	f, c, err := a.flags("status")
@@ -118,20 +126,40 @@ func collectConnections(ctx context.Context, s config.Store, name string, all bo
 			return nil, err
 		}
 		row := connectionStatus{Name: n}
+		saved := false
 		var p config.Profile
 		if err := s.Read("profile-"+n, &p); err == nil {
+			saved = true
 			row.Server = p.Server
 			row.Status.LocalIP, row.Status.PeerIP = p.LocalIP, p.PeerIP
 		}
 		var live client.Status
 		if err := localctl.Status(ctx, s.Dir, n, &live); err != nil {
 			row.Error = err.Error()
+			if saved && localctl.IsNotRunning(err) {
+				state, stateErr := statusServiceStatus(ctx, n)
+				if (stateErr == nil && stoppedServiceState(state)) || errors.Is(stateErr, service.ErrNotInstalled) {
+					row.Error = ""
+					row.Status.Running = false
+					row.Status.Mode = "stopped"
+					row.Status.ModeReason = "service_stopped"
+				}
+			}
 		} else {
 			row.Status = live
 		}
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func stoppedServiceState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "stopped", "inactive", "disabled", "exited", "deactivated", "dead":
+		return true
+	default:
+		return false
+	}
 }
 
 func statusTerminal(out io.Writer) bool {
@@ -146,6 +174,9 @@ func statusColor(out io.Writer) bool {
 func connectionMode(row connectionStatus) string {
 	if row.Error != "" {
 		return "UNAVAILABLE"
+	}
+	if row.Status.Mode == "stopped" {
+		return "STOPPED"
 	}
 	if !row.Status.Running || row.Status.Mode == "closed" {
 		return "CLOSED"
@@ -167,16 +198,18 @@ func printConnections(out io.Writer, rows []connectionStatus, color bool) {
 		}
 		return text
 	}
-	direct, relay := 0, 0
+	direct, relay, stopped := 0, 0, 0
 	for _, row := range rows {
 		switch connectionMode(row) {
 		case "DIRECT":
 			direct++
 		case "RELAY":
 			relay++
+		case "STOPPED":
+			stopped++
 		}
 	}
-	fmt.Fprintf(out, "\n%s\nConnections: %d | Direct: %d | Relay: %d | Other: %d\n", paint("1", "WIRE CONNECT"), len(rows), direct, relay, len(rows)-direct-relay)
+	fmt.Fprintf(out, "\n%s\nConnections: %d | Direct: %d | Relay: %d | Stopped: %d | Other: %d\n", paint("1", "WIRE CONNECT"), len(rows), direct, relay, stopped, len(rows)-direct-relay-stopped)
 	if len(rows) == 0 {
 		fmt.Fprintln(out, "\nNo saved connections for this user. Pair a device with wirectl connect <server>.")
 		return
@@ -186,16 +219,23 @@ func printConnections(out io.Writer, rows []connectionStatus, color bool) {
 		code := "33"
 		if mode == "DIRECT" {
 			code = "32"
+		} else if mode == "STOPPED" {
+			code = "90"
 		} else if mode == "UNAVAILABLE" || mode == "CLOSED" {
 			code = "31"
 		}
 		fmt.Fprintf(out, "\n%s\n%s %s\n", paint("2", "────────────────────────────────────────"), paint("1;36", "Connection: "+row.Name), paint("1;"+code, "["+mode+"]"))
+		if mode == "STOPPED" {
+			fmt.Fprintln(out, "  Stopped. Saved pair retained.")
+			fmt.Fprintf(out, "  Resume:       wirectl connect resume --name %s\n  Delete:       wirectl connect delete --name %s\n", row.Name, row.Name)
+			continue
+		}
 		if row.Server != "" {
 			fmt.Fprintf(out, "  Server:       %s\n", terminalText(row.Server))
 		}
 		fmt.Fprintf(out, "  Local IP:     %s (this device)\n  Peer IP:      %s (use this to access peer services)\n", terminalText(st.LocalIP), terminalText(st.PeerIP))
 		if row.Error != "" {
-			fmt.Fprintln(out, "  Status:       Cannot read live status; connection may be stopped.")
+			fmt.Fprintln(out, "  Status:       Live status unavailable.")
 			fmt.Fprintf(out, "  Details:      %s\n  Resume:       wirectl connect resume --name %s\n", terminalText(row.Error), row.Name)
 			continue
 		}

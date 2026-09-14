@@ -162,3 +162,13 @@ func dialEndpoint(ctx context.Context, dir, name string) (net.Conn, error) {
 }
 
 func validateClientEndpoint(_, _ string) error { return nil }
+
+// A missing named pipe is reported as FILE_NOT_FOUND (and on some Windows
+// versions as PATH_NOT_FOUND).  These are the only dial errors that prove the
+// local control server is absent.  Access-denied and timeout errors may come
+// from a live service and must remain unavailable diagnostics.
+func isNotRunningError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, windows.ERROR_FILE_NOT_FOUND) ||
+		errors.Is(err, windows.ERROR_PATH_NOT_FOUND)
+}

@@ -216,3 +216,32 @@ func (s Store) Credentials() (map[string]Credential, error) {
 	}
 	return m, err
 }
+
+// Remove deletes only the named state file, preserving all other profiles and
+// credentials. Missing files are already removed; unsafe paths are rejected.
+func (s Store) Remove(name string) error {
+	if err := s.Init(); err != nil {
+		return err
+	}
+	p, err := s.path(name)
+	if err != nil {
+		return err
+	}
+	st, err := os.Lstat(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return errors.New("refusing to remove non-regular state file")
+	}
+	if err := checkPrivate(p, st); err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDir(s.Dir)
+}

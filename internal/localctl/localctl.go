@@ -31,11 +31,27 @@ const (
 var (
 	// ErrAlreadyRunning means another process owns the profile's control lock.
 	ErrAlreadyRunning = errors.New("local control server already running")
+	// ErrNotRunning is a marker for a local control endpoint that is absent.
+	// Callers should use IsNotRunning because the underlying operating-system
+	// error is wrapped by net/http and differs between Unix sockets and Windows
+	// named pipes.
+	ErrNotRunning = errors.New("local control server is not running")
 	// ErrSocketPathTooLong means the Unix socket name cannot be represented by
 	// the operating system. It is never returned on Windows, which uses a
 	// named pipe instead.
 	ErrSocketPathTooLong = errors.New("local control socket path too long")
 )
+
+// IsNotRunning reports whether err proves that a profile's local control
+// endpoint is absent or refused a connection.  It deliberately excludes
+// permission, malformed-endpoint, and timeout errors: those may indicate a
+// live process or a broken installation and should remain visible to callers.
+func IsNotRunning(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrNotRunning) || isNotRunningError(err)
+}
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 

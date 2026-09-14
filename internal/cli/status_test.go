@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	"github.com/k0ngk0ng/wire-connect/internal/client"
 	"github.com/k0ngk0ng/wire-connect/internal/config"
 	"github.com/k0ngk0ng/wire-connect/internal/localctl"
+	"github.com/k0ngk0ng/wire-connect/internal/service"
 )
 
 type statusProfileFixture struct {
@@ -98,6 +100,13 @@ func populatedStatusFixture(t *testing.T) *statusProfileFixture {
 	return f
 }
 
+func setStatusServiceState(t *testing.T, fn func(context.Context, string) (string, error)) {
+	t.Helper()
+	previous := statusServiceStatus
+	statusServiceStatus = fn
+	t.Cleanup(func() { statusServiceStatus = previous })
+}
+
 func runStatus(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	args = append([]string{"status", "--state-dir", dir}, args...)
@@ -108,12 +117,13 @@ func runStatus(t *testing.T, dir string, args ...string) (string, error) {
 
 func TestStatusSummarizesAllProfiles(t *testing.T) {
 	f := populatedStatusFixture(t)
+	setStatusServiceState(t, func(context.Context, string) (string, error) { return "running", nil })
 	text, err := runStatus(t, f.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Connections: 5 | Direct: 2 | Relay: 1 | Other: 2",
+		"Connections: 5 | Direct: 2 | Relay: 1 | Stopped: 0 | Other: 2",
 		"Connection: default [DIRECT]",
 		"Connection: office [DIRECT]",
 		"Connection: relay [RELAY]",
@@ -128,6 +138,7 @@ func TestStatusSummarizesAllProfiles(t *testing.T) {
 
 func TestStatusSelectsNamedProfile(t *testing.T) {
 	f := populatedStatusFixture(t)
+	setStatusServiceState(t, func(context.Context, string) (string, error) { return "running", nil })
 	text, err := runStatus(t, f.dir, "--name", "relay")
 	if err != nil {
 		t.Fatal(err)
@@ -142,6 +153,7 @@ func TestStatusSelectsNamedProfile(t *testing.T) {
 
 func TestStatusJSONKeepsSingleProfileShape(t *testing.T) {
 	f := populatedStatusFixture(t)
+	setStatusServiceState(t, func(context.Context, string) (string, error) { return "running", nil })
 	text, err := runStatus(t, f.dir, "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +169,7 @@ func TestStatusJSONKeepsSingleProfileShape(t *testing.T) {
 
 func TestStatusJSONAllProfilesIncludesUnavailableProfile(t *testing.T) {
 	f := populatedStatusFixture(t)
+	setStatusServiceState(t, func(context.Context, string) (string, error) { return "running", nil })
 	text, err := runStatus(t, f.dir, "--all", "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +201,118 @@ func TestStatusJSONAllProfilesIncludesUnavailableProfile(t *testing.T) {
 	}
 	if byName["offline"].Error == "" {
 		t.Fatal("offline profile has no status error")
+	}
+}
+
+func TestStatusMarksStoppedOnlyWhenServiceIsStopped(t *testing.T) {
+	f := newStatusProfileFixture(t)
+	f.add(t, "stopped", "https://stopped.example", makeStatus("none", "100.64.0.9", "100.64.0.10"), false)
+	setStatusServiceState(t, func(_ context.Context, name string) (string, error) {
+		if name == "stopped" {
+			// A saved profile with no registered background service is the
+			// normal foreground/--uninstall stopped case.
+			return "", service.ErrNotInstalled
+		}
+		return "running", nil
+	})
+
+	text, err := runStatus(t, f.dir, "--name", "stopped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "Connection: stopped [STOPPED]") {
+		t.Fatalf("stopped connection was not labeled STOPPED:\n%s", text)
+	}
+	if strings.Contains(text, "[UNAVAILABLE]") || strings.Contains(text, "Details:") {
+		t.Fatalf("stopped connection leaked unavailable diagnostics:\n%s", text)
+	}
+	if !strings.Contains(text, "Stopped. Saved pair retained.") {
+		t.Fatalf("stopped explanation missing:\n%s", text)
+	}
+	if strings.Contains(text, "Local IP:") || strings.Contains(text, "Peer IP:") || strings.Contains(text, "Traffic totals") || strings.Contains(text, "Last handshake") {
+		t.Fatalf("stopped connection included live-only details:\n%s", text)
+	}
+
+	jsonText, err := runStatus(t, f.dir, "--name", "stopped", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stopped client.Status
+	if err := json.Unmarshal([]byte(jsonText), &stopped); err != nil {
+		t.Fatalf("stopped JSON shape: %v (%s)", err, jsonText)
+	}
+	if stopped.Running || stopped.Mode != "stopped" {
+		t.Fatalf("stopped JSON = %+v, want running=false and mode=stopped", stopped)
+	}
+
+	rows, err := collectConnections(context.Background(), config.Store{Dir: f.dir}, "stopped", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Error != "" || rows[0].Status.Running || rows[0].Status.Mode != "stopped" {
+		t.Fatalf("stopped status = %+v, want no error, running=false, mode=stopped", rows)
+	}
+
+	setStatusServiceState(t, func(context.Context, string) (string, error) {
+		return "", service.ErrNotInstalled
+	})
+	unknown, err := collectConnections(context.Background(), config.Store{Dir: f.dir}, "unknown", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 1 || unknown[0].Error == "" || connectionMode(unknown[0]) != "UNAVAILABLE" {
+		t.Fatalf("unknown profile status = %+v, want unavailable", unknown)
+	}
+}
+
+func TestStatusKeepsUnavailableWhenServiceIsActiveOrUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state string
+		err   error
+	}{
+		{name: "active", state: "running"},
+		{name: "manager-error", err: errors.New("service manager unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStatusProfileFixture(t)
+			f.add(t, tc.name, "https://status.example", makeStatus("none", "100.64.0.9", "100.64.0.10"), false)
+			setStatusServiceState(t, func(context.Context, string) (string, error) { return tc.state, tc.err })
+			rows, err := collectConnections(context.Background(), config.Store{Dir: f.dir}, tc.name, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || rows[0].Error == "" || connectionMode(rows[0]) != "UNAVAILABLE" {
+				t.Fatalf("missing endpoint with service state %q: %+v", tc.state, rows)
+			}
+		})
+	}
+}
+
+func TestStatusMarksInactiveServiceStopped(t *testing.T) {
+	f := newStatusProfileFixture(t)
+	f.add(t, "inactive", "https://inactive.example", makeStatus("none", "100.64.0.11", "100.64.0.12"), false)
+	setStatusServiceState(t, func(context.Context, string) (string, error) { return "inactive", nil })
+	rows, err := collectConnections(context.Background(), config.Store{Dir: f.dir}, "inactive", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Error != "" || connectionMode(rows[0]) != "STOPPED" {
+		t.Fatalf("inactive service status = %+v, want stopped", rows)
+	}
+}
+
+func TestLocalctlNotRunningClassification(t *testing.T) {
+	f := newStatusProfileFixture(t)
+	var st client.Status
+	err := localctl.Status(context.Background(), f.dir, "missing", &st)
+	if err == nil || !localctl.IsNotRunning(err) {
+		t.Fatalf("missing local endpoint error = %v; IsNotRunning = %t", err, localctl.IsNotRunning(err))
+	}
+	for _, err := range []error{nil, context.DeadlineExceeded, errors.New("permission denied")} {
+		if localctl.IsNotRunning(err) {
+			t.Errorf("IsNotRunning(%v) = true", err)
+		}
 	}
 }
 
