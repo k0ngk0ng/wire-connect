@@ -87,7 +87,7 @@ if [[ ! -x "$TESTUTIL_BIN" ]]; then
 	exit 2
 fi
 
-for required in ip iptables curl timeout awk grep sed tail sleep mktemp openssl tr sysctl head sha256sum tcpdump; do
+for required in ip iptables curl timeout awk grep sed tail sleep mktemp openssl tr sysctl head sha256sum tcpdump jq; do
 	if ! command -v "$required" >/dev/null 2>&1; then
 		echo "required command is missing: $required" >&2
 		exit 2
@@ -348,8 +348,8 @@ login_client() {
 wait_for_mode() {
 	local name="$1" ns="$2" state="$3" mode="$4" deadline=$((SECONDS + 90)) out pid
 	while (( SECONDS < deadline )); do
-		out="$(ns_exec "$ns" timeout 5s "$CONNECT_BIN" status --state-dir "$state" --name "$name" 2>/dev/null || true)"
-		if printf '%s\n' "$out" | grep -q "^${mode} "; then
+		out="$(ns_exec "$ns" timeout 5s "$CONNECT_BIN" status --json --state-dir "$state" --name "$name" 2>/dev/null || true)"
+		if printf '%s\n' "$out" | jq -e --arg mode "$mode" '.running == true and .mode == $mode' >/dev/null 2>&1; then
 			return 0
 		fi
 		pid="${PROCESS_PIDS["$name-host"]-}"
@@ -366,12 +366,9 @@ wait_for_mode() {
 }
 
 status_peer() {
-	local name="$1" ns="$2" state="$3" line peer
-	line="$(ns_exec "$ns" timeout 5s "$CONNECT_BIN" status --state-dir "$state" --name "$name" 2>/dev/null | sed -n '1p')" || return 1
-	peer="${line##* ↔ }"
-	if [[ ! "$peer" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-		return 1
-	fi
+	local name="$1" ns="$2" state="$3" status_json peer
+	status_json="$(ns_exec "$ns" timeout 5s "$CONNECT_BIN" status --json --state-dir "$state" --name "$name" 2>/dev/null)" || return 1
+	peer="$(printf '%s\n' "$status_json" | jq -er 'select(.running == true) | .peer_ip | select(type == "string" and test("^[0-9]+(\\.[0-9]+){3}$"))')" || return 1
 	printf '%s\n' "$peer"
 }
 

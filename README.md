@@ -123,11 +123,20 @@ wirectl connect resume --foreground
 
 短码由 12 个易辨认字符组成，分三组显示，不区分大小写；前 4 位是公开的会合标识，后 8 位是配对秘密。有效期 10 分钟，房间只容纳这两台设备。支持 `--code <短码>` 手动创建，但会拒绝明显的弱码。
 
-完成配对后显示双方虚拟 IP，例如：
+完成配对后按连接分块显示双方虚拟 IP，例如（省略流量和时间字段）：
 
 ```text
 Paired · local 100.93.12.1 · peer 100.93.12.2
-Connected in background · direct · 100.93.12.1 ↔ 100.93.12.2
+Connected in background
+
+WIRE CONNECT
+Connections: 1 | Direct: 1 | Relay: 0 | Other: 0
+
+────────────────────────────────────────
+Connection: default [DIRECT]
+  Local IP:     100.93.12.1 (this device)
+  Peer IP:      100.93.12.2 (use this to access peer services)
+  Current path: DIRECT — device to device (UDP)
 ```
 
 应用直接使用对端地址：
