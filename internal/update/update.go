@@ -227,6 +227,16 @@ func Run(ctx context.Context, opts Options, out io.Writer) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Resolve and inspect the real executable before any release metadata or
+	// asset request. Homebrew and Scoop own their installation prefixes and
+	// must remain the sole writers of those files.
+	installationPath, err := executablePath(opts.Executable)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := ensureSelfUpdateAllowed(installationPath); err != nil {
+		return Result{}, err
+	}
 	limits, err := normalizeLimits(opts)
 	if err != nil {
 		return Result{}, err
@@ -357,6 +367,12 @@ func Run(ctx context.Context, opts Options, out io.Writer) (Result, error) {
 
 	packageFiles, err := extractExecutableBytes(archiveBytes, archiveName, target, limits)
 	if err != nil {
+		return Result{}, err
+	}
+	// The marker is checked again immediately before replacement in case a
+	// package-manager installation became active while the archive was being
+	// fetched and verified.
+	if err := ensureSelfUpdateAllowed(installationPath); err != nil {
 		return Result{}, err
 	}
 	installedPath, already, pending, err := replaceCurrentExecutable(ctx, opts.Executable, packageFiles, opts.RefreshStateDir)
@@ -1344,6 +1360,12 @@ func replaceCurrentExecutable(ctx context.Context, override string, packageFiles
 	}
 	path, err := executablePath(override)
 	if err != nil {
+		return "", false, false, err
+	}
+	// Re-resolve the override immediately before touching the installation. A
+	// launcher symlink may have changed while the release was being fetched;
+	// the final path must still be allowed for self-update.
+	if err := ensureSelfUpdateAllowed(path); err != nil {
 		return "", false, false, err
 	}
 	if err := validateInstallTarget(path); err != nil {

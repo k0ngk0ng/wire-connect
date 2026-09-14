@@ -189,6 +189,94 @@ func TestRunRejectsChecksumMismatchBeforeReplacing(t *testing.T) {
 	}
 }
 
+func TestRunRejectsPackageManagerInstallBeforeNetwork(t *testing.T) {
+	target, err := CurrentTarget()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, tt := range []struct {
+		name    string
+		marker  string
+		command string
+	}{
+		{name: "homebrew", marker: "homebrew\n", command: "brew upgrade k0ngk0ng/tap/wire-connect"},
+		{name: "scoop", marker: "scoop", command: "scoop update wire-connect"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			executable := filepath.Join(root, expectedBinaryName(target))
+			if err := os.MkdirAll(filepath.Dir(executable), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(executable, []byte("managed executable"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(filepath.Dir(executable), packageManagerMarkerName), []byte(tt.marker), 0600); err != nil {
+				t.Fatal(err)
+			}
+			unexpectedNetwork := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("network request should not be made")
+			})}
+			_, err := Run(context.Background(), Options{Executable: executable, HTTPClient: unexpectedNetwork}, io.Discard)
+			if err == nil || !errors.Is(err, ErrPackageManagerManaged) || !strings.Contains(err.Error(), tt.command) {
+				t.Fatalf("managed update error = %v; want package-manager command %q", err, tt.command)
+			}
+		})
+	}
+}
+
+func TestDetectPackageManagerRejectsUnsafeMarker(t *testing.T) {
+	target, err := CurrentTarget()
+	if err != nil {
+		t.Skip(err)
+	}
+	root := t.TempDir()
+	executable := filepath.Join(root, expectedBinaryName(target))
+	if err := os.MkdirAll(filepath.Dir(executable), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("executable"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(filepath.Dir(executable), packageManagerMarkerName)
+	for _, value := range []string{"", "unknown", strings.Repeat("x", packageManagerMarkerMax+1)} {
+		if err := os.WriteFile(marker, []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := detectPackageManager(executable); err == nil || !errors.Is(err, ErrInvalidPackageManagerMarker) {
+			t.Fatalf("marker %q error = %v; want ErrInvalidPackageManagerMarker", value, err)
+		}
+	}
+}
+
+func TestDetectPackageManagerUsesResolvedExecutableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating executable symlinks requires elevated Windows privileges")
+	}
+	root := t.TempDir()
+	installedDir := filepath.Join(root, "libexec")
+	if err := os.MkdirAll(installedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(installedDir, "wirectl-connect")
+	if err := os.WriteFile(executable, []byte("executable"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installedDir, packageManagerMarkerName), []byte("homebrew\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(root, "bin", "wirectl-connect")
+	if err := os.MkdirAll(filepath.Dir(launcher), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(executable, launcher); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := detectPackageManager(launcher); err != nil || got != packageManagerHomebrew {
+		t.Fatalf("resolved package manager = %q, error = %v; want homebrew", got, err)
+	}
+}
+
 func TestArchiveRejectsTraversalLinksDuplicatesAndMissingBinary(t *testing.T) {
 	tests := []struct {
 		name string

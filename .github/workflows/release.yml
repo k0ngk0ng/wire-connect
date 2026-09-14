@@ -94,6 +94,9 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
+          Homebrew and Scoop installations now direct updates to their package
+          manager, preserving managed files. Standalone updates remain supported.
+
           Connect and resume now keep the connection in the background by default.
           Run setup once to authorize a network helper, then use your ordinary
           account for daily commands. Use --foreground for a temporary session.

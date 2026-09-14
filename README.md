@@ -246,6 +246,10 @@ wirectl connect update
 wirectl connect update --version 1.2.0
 ```
 
+Homebrew 和 Scoop 安装会在实际执行文件旁带有
+`.wire-connect-package-manager` 标记，`update` 会提示分别执行
+`brew upgrade k0ngk0ng/tap/wire-connect` 或 `scoop update wire-connect`，不会改写包管理器目录。手动安装的执行文件没有该标记，继续使用内置更新。
+
 在线更新只接受官方 GitHub API 和 Release 下载地址。程序会下载目标 archive 和独立的 `SHA256SUMS` Release asset，分别校验 GitHub 提供的 SHA-256，再校验 `SHA256SUMS` 中对应的 archive 条目，确认无误后才原子替换当前 `wirectl-connect`。Linux/macOS 的执行文件必须由当前账号可写；安装在系统目录时请用拥有该安装目录的管理员工作流更新。Windows 会在执行文件占用时交给更新交接程序完成替换。
 
 更新完成后，程序会刷新已经安装的 network helper 和仍启用的后台连接副本。因为 helper 运行在管理员身份，更新已安装 helper 时可能再次显示 sudo/UAC 授权；这是升级特权副本。已停止或已禁用的 profile 会保持停止状态，不会被 update 自动启动；下次执行 `resume` 时会复制当前最新版并启动。自定义状态目录需要显式传给 update：
