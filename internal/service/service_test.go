@@ -3,10 +3,30 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+const (
+	serviceCommandHelperEnv  = "WIRE_CONNECT_SERVICE_COMMAND_HELPER"
+	serviceCommandHelperMode = "WIRE_CONNECT_SERVICE_COMMAND_HELPER_MODE"
+)
+
+// TestServiceCommandHelper is launched by the command-runner cancellation
+// tests. Keeping the helper in this test binary avoids relying on a platform
+// shell or on a checked-in executable fixture.
+func TestServiceCommandHelper(t *testing.T) {
+	if os.Getenv(serviceCommandHelperEnv) != "1" {
+		return
+	}
+	if os.Getenv(serviceCommandHelperMode) != "sleep" {
+		t.Fatalf("unknown command helper mode %q", os.Getenv(serviceCommandHelperMode))
+	}
+	time.Sleep(10 * time.Second)
+}
 
 func TestNormalizeName(t *testing.T) {
 	tests := []struct {
@@ -84,5 +104,56 @@ func TestContextErr(t *testing.T) {
 	}
 	if err := contextErr(nil); err == nil {
 		t.Fatal("contextErr(nil) succeeded")
+	}
+}
+
+func TestExecCommandRunnerPreservesContextDeadline(t *testing.T) {
+	t.Setenv(serviceCommandHelperEnv, "1")
+	t.Setenv(serviceCommandHelperMode, "sleep")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := (execCommandRunner{}).Output(ctx, os.Args[0], "-test.run=^TestServiceCommandHelper$")
+	if err == nil {
+		t.Fatal("command unexpectedly succeeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("command error = %v; want context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("command error = %v; want a readable deadline cause", err)
+	}
+}
+
+func TestExecCommandRunnerPreservesContextCancellation(t *testing.T) {
+	t.Setenv(serviceCommandHelperEnv, "1")
+	t.Setenv(serviceCommandHelperMode, "sleep")
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := (execCommandRunner{}).Output(ctx, os.Args[0], "-test.run=^TestServiceCommandHelper$")
+		result <- err
+	}()
+	t.Cleanup(cancel)
+
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		cancel()
+	case err := <-result:
+		t.Fatalf("command returned before cancellation: %v", err)
+	}
+
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("command unexpectedly succeeded")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("command error = %v; want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("command did not stop after context cancellation")
 	}
 }

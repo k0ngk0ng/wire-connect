@@ -71,6 +71,7 @@ func (f *statusProfileFixture) add(t *testing.T, name, server string, st client.
 }
 
 func makeStatus(mode, local, peer string) client.Status {
+	now := time.Now().UTC()
 	return client.Status{
 		Running:        true,
 		Mode:           mode,
@@ -81,10 +82,10 @@ func makeStatus(mode, local, peer string) client.Status {
 		RelaySent:      512,
 		RelayReceived:  256,
 		DirectRemote:   "203.0.113.8:34781",
-		ModeSince:      time.Date(2026, time.September, 14, 6, 56, 25, 0, time.UTC),
+		ModeSince:      now.Add(-time.Second),
 		ModeReason:     mode + "_selected",
-		LastHandshake:  time.Date(2026, time.September, 14, 6, 56, 21, 0, time.UTC),
-		Updated:        time.Date(2026, time.September, 14, 6, 56, 26, 0, time.UTC),
+		LastHandshake:  now.Add(-5 * time.Second),
+		Updated:        now,
 	}
 }
 
@@ -123,11 +124,11 @@ func TestStatusSummarizesAllProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Connections: 5 | Direct: 2 | Relay: 1 | Stopped: 0 | Other: 2",
-		"Connection: default [DIRECT]",
-		"Connection: office [DIRECT]",
-		"Connection: relay [RELAY]",
-		"Connection: waiting [WAITING]",
+		"Connections: 5 | Connected: 3 | Waiting: 1 | Unconfirmed: 0 | Stopped: 0 | Other: 1",
+		"Connection: default [CONNECTED · DIRECT]",
+		"Connection: office [CONNECTED · DIRECT]",
+		"Connection: relay [CONNECTED · RELAY]",
+		"Connection: waiting [NOT CONNECTED]",
 		"Connection: offline [UNAVAILABLE]",
 	} {
 		if !strings.Contains(text, want) {
@@ -143,7 +144,7 @@ func TestStatusSelectsNamedProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "Connection: relay [RELAY]") {
+	if !strings.Contains(text, "Connection: relay [CONNECTED · RELAY]") {
 		t.Fatalf("named status missing relay:\n%s", text)
 	}
 	if strings.Contains(text, "Connection: default") || strings.Contains(text, "Connection: office") || strings.Contains(text, "Connection: offline") {
@@ -330,7 +331,7 @@ func TestPrintConnectionsColorAndNoColor(t *testing.T) {
 	if !strings.Contains(colored.String(), "\x1b[1mWIRE CONNECT\x1b[0m") {
 		t.Fatalf("color output has no colored title: %q", colored.String())
 	}
-	if !strings.Contains(colored.String(), "\x1b[1;32m[DIRECT]\x1b[0m") || !strings.Contains(colored.String(), "\x1b[1;33m[RELAY]\x1b[0m") {
+	if !strings.Contains(colored.String(), "\x1b[1;32m[CONNECTED · DIRECT]\x1b[0m") || !strings.Contains(colored.String(), "\x1b[1;32m[CONNECTED · RELAY]\x1b[0m") {
 		t.Fatalf("color output has no per-path colors: %q", colored.String())
 	}
 }
@@ -350,7 +351,7 @@ func TestPrintConnectionsHistoryCountersDoNotChangeCurrentMode(t *testing.T) {
 	var out bytes.Buffer
 	printConnections(&out, []connectionStatus{row}, false)
 	text := out.String()
-	if !strings.Contains(text, "Connection: upgraded [DIRECT]") {
+	if !strings.Contains(text, "Connection: upgraded [CONNECTED · DIRECT]") {
 		t.Fatalf("current mode missing from output: %s", text)
 	}
 	if !strings.Contains(text, "Direct:  ↑ 4.0 KiB sent   ↓ 3.0 KiB received") || !strings.Contains(text, "Relay:   ↑ 2.0 KiB sent   ↓ 1.0 KiB received") {

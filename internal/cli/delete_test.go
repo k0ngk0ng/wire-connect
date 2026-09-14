@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/k0ngk0ng/wire-connect/internal/config"
 	"github.com/k0ngk0ng/wire-connect/internal/service"
@@ -168,5 +169,104 @@ func TestConnectionManagementCommandRouting(t *testing.T) {
 	err := Run(context.Background(), []string{"delete", "office"}, "test", strings.NewReader(""), &out, &out)
 	if err == nil || !strings.Contains(err.Error(), "--name NAME") {
 		t.Fatalf("positional delete: %v", err)
+	}
+}
+
+func TestStopUsesSeparateStageBudgets(t *testing.T) {
+	checkBudget := func(ctx context.Context, want time.Duration) {
+		t.Helper()
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > want || time.Until(deadline) < want-time.Second {
+			t.Fatalf("stage deadline = %v; expected budget %s", deadline, want)
+		}
+	}
+	var ipcContext, serviceContext context.Context
+	ops := connectionLifecycle{
+		stop: func(ctx context.Context, _, _ string) error {
+			checkBudget(ctx, 3*time.Second)
+			ipcContext = ctx
+			return nil
+		},
+		service: func(ctx context.Context, _ string, _ bool) error {
+			if ipcContext.Err() != context.Canceled {
+				t.Fatal("IPC context not released")
+			}
+			checkBudget(ctx, 90*time.Second)
+			serviceContext = ctx
+			return nil
+		},
+		status: func(ctx context.Context, _, _ string, _ any) error {
+			if serviceContext.Err() != context.Canceled {
+				t.Fatal("service context not released")
+			}
+			checkBudget(ctx, 15*time.Second)
+			return os.ErrNotExist
+		},
+	}
+	if err := ops.stopAndWait(context.Background(), config.Store{}, "office", true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteServiceFailureExplainsTimeoutAndAllowsRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failure error
+		timeout bool
+	}{
+		{"timeout", errors.Join(errors.New("signal: killed"), context.DeadlineExceeded), true},
+		{"killed", errors.New("signal: killed"), false},
+		{"canceled", context.Canceled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := config.Store{Dir: filepath.Join(t.TempDir(), "state")}
+			if err := s.Write("profile-office", config.Profile{PairID: "keep"}); err != nil {
+				t.Fatal(err)
+			}
+			failure := tc.failure
+			ops := connectionLifecycle{
+				stop:    func(context.Context, string, string) error { return os.ErrNotExist },
+				service: func(context.Context, string, bool) error { return failure },
+				status:  func(context.Context, string, string, any) error { return os.ErrNotExist },
+			}
+			removed, err := forgetConnection(context.Background(), s, "office", ops)
+			if removed || !errors.Is(err, tc.failure) || !strings.Contains(err.Error(), "saved pair retained") {
+				t.Fatalf("removed=%v err=%v", removed, err)
+			}
+			if strings.Contains(err.Error(), "timed out") != tc.timeout {
+				t.Fatalf("incorrect timeout classification: %v", err)
+			}
+			if tc.timeout && !strings.Contains(err.Error(), "retry wirectl connect delete --name office") {
+				t.Fatalf("missing retry guidance: %v", err)
+			}
+			var saved config.Profile
+			if err := s.Read("profile-office", &saved); err != nil || saved.PairID != "keep" {
+				t.Fatalf("saved pair lost: %v", err)
+			}
+			failure = service.ErrNotInstalled
+			if removed, err := forgetConnection(context.Background(), s, "office", ops); !removed || err != nil {
+				t.Fatalf("retry removed=%v err=%v", removed, err)
+			}
+		})
+	}
+}
+
+func TestStopServiceRespectsParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ops := connectionLifecycle{
+		stop: func(context.Context, string, string) error { return nil },
+		service: func(stage context.Context, _ string, _ bool) error {
+			cancel()
+			<-stage.Done()
+			return errors.New("signal: killed")
+		},
+		status: func(context.Context, string, string, any) error {
+			t.Fatal("must not check endpoint after cancellation")
+			return nil
+		},
+	}
+	if err := ops.stopAndWait(ctx, config.Store{}, "office", false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost parent cancellation: %v", err)
 	}
 }

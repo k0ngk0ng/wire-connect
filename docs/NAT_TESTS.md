@@ -79,7 +79,7 @@ An Ubuntu runner needs the following packages:
 
 ```sh
 sudo apt-get update
-sudo -H apt-get install -y iproute2 iptables curl openssl coreutils procps tcpdump
+sudo -H apt-get install -y iproute2 iptables curl openssl coreutils procps tcpdump jq
 ```
 
 Go is needed only to build the two binaries. No external network is used after

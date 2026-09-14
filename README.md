@@ -130,13 +130,14 @@ Paired · local 100.93.12.1 · peer 100.93.12.2
 Connected in background
 
 WIRE CONNECT
-Connections: 1 | Direct: 1 | Relay: 0 | Stopped: 0 | Other: 0
+Connections: 1 | Connected: 1 | Waiting: 0 | Unconfirmed: 0 | Stopped: 0 | Other: 0
+Connected paths: Direct: 1 | Relay: 0
 
 ────────────────────────────────────────
-Connection: default [DIRECT]
+Connection: default [CONNECTED · DIRECT]
   Local IP:     100.93.12.1 (this device)
   Peer IP:      100.93.12.2 (use this to access peer services)
-  Current path: DIRECT — device to device (UDP)
+  Transport:    DIRECT — device to device (UDP)
 ```
 
 应用直接使用对端地址：
@@ -222,7 +223,7 @@ sudo -H wirectl connect resume
 
 ## 查看路径和流量
 
-`status` 默认列出当前账号状态目录中的所有已保存连接，顶部汇总连接数和 Direct / Relay / Stopped / Other 数量，每条连接单独分块。使用 `--name office` 可只看指定连接：
+`status` 默认列出当前账号状态目录中的所有已保存连接，顶部先汇总已连接、等待、未确认和停止数量，再列出已握手连接使用 Direct / Relay 的数量，每条连接单独分块。使用 `--name office` 可只看指定连接：
 
 ```sh
 wirectl connect status
@@ -234,7 +235,15 @@ wirectl connect status
 wirectl connect status --watch
 ```
 
-终端中直连 `[DIRECT]` 显示绿色，中转 `[RELAY]` 显示黄色，无法读取状态 `[UNAVAILABLE]` 和已关闭 `[CLOSED]` 显示红色。`Stopped` 单独统计已停止连接；`Other` 包括等待路径、已关闭或状态不可用的连接；不会根据旧流量推断当前路径。输出包含双方虚拟 IP、当前 UDP endpoint、本地时区时间和易读流量单位。直连/中转流量是进程启动以来的累计值，包含历史路径，不代表同时使用两条链路。未运行的已保存连接仍会列出。
+终端首先显示对端连接状态，传输路径单独显示：
+
+- `[NOT CONNECTED]`：尚未完成 WireGuard 握手，或已没有可用传输路径。即使连接了中转服务器，也不计入 `Connected` 和已连接路径数量。
+- `[CONNECTED · DIRECT]` / `[CONNECTED · RELAY]`：已选择对应路径，且近期观察到 WireGuard 握手；不代表对方的每个应用服务都可访问。
+- `[UNCONFIRMED]`：握手距今超过 3 分钟，或状态采样距今超过 15 秒，暂不计为已连接。这表示证据过旧，不等同于断定对端离线。
+- `[STOPPED]`：已停止，保留配对；`[UNAVAILABLE]` 表示无法可靠查询状态。
+
+已连接状态用绿色，等待和未确认用黄色，正常停止用灰色，查询失败或关闭用红色。`Connected paths` 只统计有近期握手的连接，下面每条的 `Transport` 才表示底层当前选择的路径。`running` 和 `mode` 的 JSON 含义保持不变：分别表示本机进程运行和传输路径；判断握手必须同时查看 `last_handshake`。流量包含握手尝试和此前路径的累计值，不能单凭发送或接收字节判断已经连通。
+
 
 `--watch` 在交互终端原地刷新，退出后恢复原屏幕；重定向时逐次追加快照。重定向输出、`TERM=dumb` 或设置 `NO_COLOR` 时不输出颜色。handshake 表示最近一次观察到的握手时间，不保证对端持续健康。
 

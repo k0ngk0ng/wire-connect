@@ -128,6 +128,14 @@ func (execCommandRunner) Output(ctx context.Context, name string, args ...string
 	if err == nil {
 		return out, nil
 	}
+	// CommandContext terminates the process when ctx is done, but Wait may
+	// report only the resulting process error (usually "signal: killed").
+	// Preserve the context cause alongside that platform-specific detail so
+	// callers can reliably use errors.Is for cancellation and deadlines. A
+	// process failure with a live context remains an ordinary process error.
+	if contextErr := ctx.Err(); contextErr != nil {
+		err = errors.Join(err, contextErr)
+	}
 	detail := strings.TrimSpace(string(out))
 	if detail == "" {
 		return out, fmt.Errorf("run %s: %w", formatCommand(name, args), err)

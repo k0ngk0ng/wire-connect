@@ -171,7 +171,16 @@ func statusColor(out io.Writer) bool {
 	return statusTerminal(out) && os.Getenv("NO_COLOR") == ""
 }
 
+// A recent handshake is evidence of a peer session, not proof that every
+// application on the peer is reachable. Old handshakes are shown as uncertain.
+const peerHandshakeFreshness = 3 * time.Minute
+const statusFreshness = 15 * time.Second
+
 func connectionMode(row connectionStatus) string {
+	return connectionModeAt(row, time.Now())
+}
+
+func connectionModeAt(row connectionStatus, now time.Time) string {
 	if row.Error != "" {
 		return "UNAVAILABLE"
 	}
@@ -180,6 +189,18 @@ func connectionMode(row connectionStatus) string {
 	}
 	if !row.Status.Running || row.Status.Mode == "closed" {
 		return "CLOSED"
+	}
+	if !row.Status.Updated.IsZero() && now.Sub(row.Status.Updated) > statusFreshness {
+		return "UNCONFIRMED"
+	}
+	if row.Status.Mode != "direct" && row.Status.Mode != "relay" {
+		return "WAITING"
+	}
+	if row.Status.LastHandshake.IsZero() {
+		return "WAITING"
+	}
+	if now.Sub(row.Status.LastHandshake) > peerHandshakeFreshness {
+		return "UNCONFIRMED"
 	}
 	switch row.Status.Mode {
 	case "direct":
@@ -192,68 +213,112 @@ func connectionMode(row connectionStatus) string {
 }
 
 func printConnections(out io.Writer, rows []connectionStatus, color bool) {
+	printConnectionsAt(out, rows, color, time.Now())
+}
+
+func printConnectionsAt(out io.Writer, rows []connectionStatus, color bool, now time.Time) {
 	paint := func(code, text string) string {
 		if color {
 			return "\x1b[" + code + "m" + text + "\x1b[0m"
 		}
 		return text
 	}
-	direct, relay, stopped := 0, 0, 0
+	direct, relay, waiting, unconfirmed, stopped := 0, 0, 0, 0, 0
 	for _, row := range rows {
-		switch connectionMode(row) {
+		switch connectionModeAt(row, now) {
 		case "DIRECT":
 			direct++
 		case "RELAY":
 			relay++
+		case "WAITING":
+			waiting++
+		case "UNCONFIRMED":
+			unconfirmed++
 		case "STOPPED":
 			stopped++
 		}
 	}
-	fmt.Fprintf(out, "\n%s\nConnections: %d | Direct: %d | Relay: %d | Stopped: %d | Other: %d\n", paint("1", "WIRE CONNECT"), len(rows), direct, relay, stopped, len(rows)-direct-relay-stopped)
+	fmt.Fprintf(out, "\n%s\nConnections: %d | Connected: %d | Waiting: %d | Unconfirmed: %d | Stopped: %d | Other: %d\n", paint("1", "WIRE CONNECT"), len(rows), direct+relay, waiting, unconfirmed, stopped, len(rows)-direct-relay-waiting-unconfirmed-stopped)
+	fmt.Fprintf(out, "Connected paths: Direct: %d | Relay: %d\n", direct, relay)
 	if len(rows) == 0 {
 		fmt.Fprintln(out, "\nNo saved connections for this user. Pair a device with wirectl connect <server>.")
 		return
 	}
 	for _, row := range rows {
-		st, mode := row.Status, connectionMode(row)
+		st, mode := row.Status, connectionModeAt(row, now)
 		code := "33"
-		if mode == "DIRECT" {
+		if mode == "DIRECT" || mode == "RELAY" {
 			code = "32"
 		} else if mode == "STOPPED" {
 			code = "90"
 		} else if mode == "UNAVAILABLE" || mode == "CLOSED" {
 			code = "31"
 		}
-		fmt.Fprintf(out, "\n%s\n%s %s\n", paint("2", "────────────────────────────────────────"), paint("1;36", "Connection: "+row.Name), paint("1;"+code, "["+mode+"]"))
+		label := mode
+		if mode == "DIRECT" || mode == "RELAY" {
+			label = "CONNECTED · " + mode
+		}
+		if mode == "WAITING" {
+			label = "NOT CONNECTED"
+		}
+		fmt.Fprintf(out, "\n%s\n%s %s\n", paint("2", "────────────────────────────────────────"), paint("1;36", "Connection: "+row.Name), paint("1;"+code, "["+label+"]"))
 		if mode == "STOPPED" {
 			fmt.Fprintln(out, "  Stopped. Saved pair retained.")
 			fmt.Fprintf(out, "  Resume:       wirectl connect resume --name %s\n  Delete:       wirectl connect delete --name %s\n", row.Name, row.Name)
 			continue
 		}
+		switch mode {
+		case "WAITING":
+			if st.LastHandshake.IsZero() {
+				fmt.Fprintln(out, paint("1;33", "  Not connected to peer — no WireGuard handshake yet."))
+			} else {
+				fmt.Fprintln(out, paint("1;33", "  No active transport path — waiting to reconnect."))
+			}
+			fmt.Fprintln(out, "  Next step: Check that the other device has resumed its paired connection.")
+		case "UNCONFIRMED":
+			if !st.Updated.IsZero() && now.Sub(st.Updated) > statusFreshness {
+				fmt.Fprintln(out, paint("1;33", "  Peer connectivity unconfirmed — status is more than 15 seconds old."))
+			} else {
+				fmt.Fprintln(out, paint("1;33", "  Peer connectivity unconfirmed — no handshake in the last 3 minutes."))
+			}
+		case "DIRECT", "RELAY":
+			fmt.Fprintln(out, "  Peer session: Recent WireGuard handshake established.")
+		}
 		if row.Server != "" {
 			fmt.Fprintf(out, "  Server:       %s\n", terminalText(row.Server))
 		}
-		fmt.Fprintf(out, "  Local IP:     %s (this device)\n  Peer IP:      %s (use this to access peer services)\n", terminalText(st.LocalIP), terminalText(st.PeerIP))
+		peerHint := "paired address"
+		if mode == "DIRECT" || mode == "RELAY" {
+			peerHint = "use this to access peer services"
+		}
+		fmt.Fprintf(out, "  Local IP:     %s (this device)\n  Peer IP:      %s (%s)\n", terminalText(st.LocalIP), terminalText(st.PeerIP), peerHint)
 		if row.Error != "" {
 			fmt.Fprintln(out, "  Status:       Live status unavailable.")
 			fmt.Fprintf(out, "  Details:      %s\n  Resume:       wirectl connect resume --name %s\n", terminalText(row.Error), row.Name)
 			continue
 		}
 		description := "No active transport path"
-		if mode == "DIRECT" {
+		if st.Mode == "direct" {
 			description = "DIRECT — device to device (UDP)"
 		}
-		if mode == "RELAY" {
+		if st.Mode == "relay" {
 			description = "RELAY — through the server"
 		}
-		fmt.Fprintf(out, "  Current path: %s\n", paint(code, description))
-		if mode == "DIRECT" && st.DirectRemote != "" {
+		if mode == "WAITING" && st.Mode == "relay" {
+			description = "RELAY — relay server reached; peer handshake pending"
+		}
+		pathColor := "33"
+		if st.Mode == "direct" {
+			pathColor = "36"
+		}
+		fmt.Fprintf(out, "  Transport:    %s\n", paint(pathColor, description))
+		if st.Mode == "direct" && st.DirectRemote != "" {
 			fmt.Fprintf(out, "  UDP endpoint: %s\n", terminalText(st.DirectRemote))
 		}
 		if !st.ModeSince.IsZero() {
 			fmt.Fprintf(out, "  Path since:   %s\n", statusTime(st.ModeSince))
 		}
-		fmt.Fprintln(out, "\n  Traffic totals since process start (including previous paths)")
+		fmt.Fprintln(out, "\n  Traffic totals since process start (includes handshake attempts and previous paths)")
 		fmt.Fprintf(out, "    Direct:  ↑ %s sent   ↓ %s received\n    Relay:   ↑ %s sent   ↓ %s received\n", statusBytes(st.DirectSent), statusBytes(st.DirectReceived), statusBytes(st.RelaySent), statusBytes(st.RelayReceived))
 		handshake := "Waiting for the peer (no handshake yet)"
 		if !st.LastHandshake.IsZero() {

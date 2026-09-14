@@ -75,7 +75,7 @@ func TestStatusWatchCancellationLeavesConnectionRunning(t *testing.T) {
 	}
 	var text bytes.Buffer
 	printConnections(&text, []connectionStatus{{Name: "default", Status: got}}, false)
-	for _, want := range []string{"UDP endpoint: 203.0.113.8:34781", "Direct:  ↑ 4.0 KiB sent", "Relay:   ↑ 128 B sent", "Last handshake:", "[DIRECT]", "Connections: 1 | Direct: 1 | Relay: 0 | Stopped: 0 | Other: 0"} {
+	for _, want := range []string{"UDP endpoint: 203.0.113.8:34781", "Direct:  ↑ 4.0 KiB sent", "Relay:   ↑ 128 B sent", "Last handshake:", "[CONNECTED · DIRECT]", "Connections: 1 | Connected: 1 | Waiting: 0 | Unconfirmed: 0 | Stopped: 0 | Other: 0"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("status missing %q: %s", want, text.String())
 		}

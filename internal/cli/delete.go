@@ -30,16 +30,33 @@ func nativeConnectionLifecycle() connectionLifecycle {
 }
 
 func (ops connectionLifecycle) stopAndWait(ctx context.Context, s config.Store, name string, uninstall bool) error {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
 	// Disable the restart policy even if the process exits between requests.
 	ipcCtx, ipcCancel := context.WithTimeout(ctx, 3*time.Second)
 	ipcErr := ops.stop(ipcCtx, s.Dir, name)
 	ipcCancel()
-	serviceErr := ops.service(ctx, name, uninstall)
+	// Native cleanup includes a service stop (up to 30 seconds on Linux)
+	// and configuration reloads. Give it a separate budget from IPC.
+	serviceCtx, serviceCancel := context.WithTimeout(ctx, 90*time.Second)
+	serviceErr := ops.service(serviceCtx, name, uninstall)
+	if serviceCtx.Err() != nil {
+		serviceErr = errors.Join(serviceErr, serviceCtx.Err())
+	}
+	serviceCancel()
+	if errors.Is(serviceErr, context.DeadlineExceeded) {
+		action, command := "stopping", "stop"
+		if uninstall {
+			action, command = "removing", "delete"
+		}
+		return fmt.Errorf("timed out %s background service for %s; cleanup may be incomplete; retry wirectl connect %s --name %s: %w", action, name, command, name, serviceErr)
+	}
+	if errors.Is(serviceErr, context.Canceled) {
+		return fmt.Errorf("service cleanup canceled for %s: %w", name, serviceErr)
+	}
 	if serviceErr != nil && !errors.Is(serviceErr, service.ErrNotInstalled) {
 		return fmt.Errorf("stop service for %s: %w", name, serviceErr)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	// A successful native service stop can resolve an unresponsive IPC endpoint.
 	// Always check the final state before removing a saved pair.
 	for {

@@ -94,16 +94,17 @@ jobs:
           cat > "$notes_file" <<EOF
           wire-connect $TAG
 
-          Fix Linux background services failing to start when systemd does not
-          provide HOME or XDG_CONFIG_HOME. Explicit --state-dir paths now work
-          without those variables; the default configuration directory is only
-          resolved when it is actually needed. Update refresh uses the same
-          deferred directory resolution.
+          Connection status now separates peer session readiness from transport
+          path. Saved profiles show connected, not connected, unconfirmed, stopped
+          or unavailable states, and recent status snapshots plus WireGuard
+          handshakes determine the connected counts while Direct and Relay remain
+          separate paths.
 
-          This fixes the repeated service restart / missing local control socket
-          failure after successful pairing. Saved pairs do not need to be recreated.
-          Regression tests cover explicit and implicit state directories without
-          a user configuration environment.
+          Fix stop and delete timing out during native service cleanup. IPC stop,
+          service-manager cleanup and final shutdown confirmation now have separate
+          time budgets. Timeout errors include a retry command, saved pairs remain
+          protected when cleanup is incomplete, and cancellation or deadline causes
+          remain visible to callers.
 
           Pair two devices with a short code and access the peer through its
           WireGuard virtual IP. ICE/STUN prefers UDP direct connectivity;
