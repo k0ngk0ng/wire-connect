@@ -26,6 +26,37 @@ macOS Intel（amd64）和 Windows ARM 不在支持范围内。虚拟网络承载
 
 ## 安装
 
+macOS（Apple Silicon）和 Linux（amd64/arm64），已有 Homebrew 时：
+
+```sh
+brew install k0ngk0ng/tap/wire-connect
+```
+
+Windows amd64，已有 Scoop 时，在普通 PowerShell 中执行：
+
+```powershell
+scoop bucket add k0ngk0ng https://github.com/k0ngk0ng/scoop-bucket
+scoop install k0ngk0ng/wire-connect
+```
+
+两种方式均自动安装 `wirectl` 主程序。Linux 不使用 Homebrew 时，可按下面方式安装官方压缩包。升级由对应包管理器负责：
+
+```sh
+# Homebrew
+brew update
+brew upgrade k0ngk0ng/tap/wirectl k0ngk0ng/tap/wire-connect
+
+# Scoop
+scoop update
+scoop update wirectl wire-connect
+```
+
+升级后，以平常使用的账号运行 `wirectl connect setup` 刷新 helper，再用 `wirectl connect resume` 刷新需要运行的连接；多个 profile 分别使用 `resume --name NAME`。此前手工安装过的用户，先检查 `type -a wirectl wirectl-connect`（Windows 用 `Get-Command wirectl,wirectl-connect -All`），避免 PATH 中旧版本遮住包管理器安装的版本。
+
+[Homebrew Tap](https://github.com/k0ngk0ng/homebrew-tap) 和 [Scoop Bucket](https://github.com/k0ngk0ng/scoop-bucket) 的 Actions 每小时检查正式 Release，校验 GitHub SHA-256 和独立 `SHA256SUMS`，原生安装测试通过后才更新包定义。支持手动触发；GitHub 定时任务可能延迟。Brew 自动安装 Bash/Zsh 补全文件，仍需按 Homebrew 的说明启用 shell 补全系统。
+
+### 手动安装
+
 从 [GitHub Releases](https://github.com/k0ngk0ng/wire-connect/releases) 下载对应平台的压缩包，验证 `SHA256SUMS` 后解压。发布工作流还生成 GitHub 构建来源证明：
 
 ```sh
